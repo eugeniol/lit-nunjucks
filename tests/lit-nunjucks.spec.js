@@ -1,4 +1,4 @@
-const { compile } = require("../traverse");
+const { compile } = require("../lit-nunjucks");
 const babel = require("@babel/parser");
 const { default: generate } = require("@babel/generator");
 
@@ -52,9 +52,10 @@ describe("filters", () => {
 
 describe("if else", () => {
     test("{% if customer.authorized %} ", () => {
-        expect(compile(`{% if customer.authorized %} yu {% endif %}`)).toEqual(
-            toCode("{ return question ? html`yes`: html`no` }", "question")
-        );
+        console.log(compile(`{% if authorized %} 
+Hello {{customer.name}}
+{% endif %}`))
+        
     });
     test("should compile if else", () => {
         expect(compile(`{%if question %}yes{%else%}no{% endif %}`)).toEqual(
