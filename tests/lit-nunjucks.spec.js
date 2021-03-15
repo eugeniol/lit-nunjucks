@@ -12,7 +12,7 @@ describe("outputs", () => {
         ));
     test("should return just html", () =>
         expect(compile(`source with no vars`)).toEqual(
-            toCode("{ return html`source with no vars`; }")
+            toCode('{ return "source with no vars"; }')
         ));
     test("should return a template with leading html", () => {
         expect(compile(`{{ output }} `)).toEqual(
@@ -52,14 +52,15 @@ describe("filters", () => {
 
 describe("if else", () => {
     test("{% if customer.authorized %} ", () => {
-        console.log(compile(`{% if authorized %} 
-Hello {{customer.name}}
-{% endif %}`))
-        
+        console.log(
+            compile(
+                `{{ form_billing_expiration_date }}{{ payment.cc_exp_date }}`
+            )
+        );
     });
     test("should compile if else", () => {
         expect(compile(`{%if question %}yes{%else%}no{% endif %}`)).toEqual(
-            toCode("{ return question ? html`yes`: html`no` }", "question")
+            toCode('{ return question ? "yes": "no" }', "question")
         );
     });
     test("should left side if else", () => {
@@ -69,7 +70,7 @@ Hello {{customer.name}}
     });
     test("should compile if", () => {
         expect(compile(`{%if question %}yes{% endif %}`)).toEqual(
-            toCode("{ return question && html`yes` }", "question")
+            toCode('{ return question ? "yes" : "" }', "question")
         );
     });
 });
@@ -105,13 +106,17 @@ describe("forloop", () => {
             compile(`{%for item in list %}{{item}}{%else%}nothing{% endfor%}`)
         ).toEqual(
             toCode(
-                "{return list.length ? repeat(list, (item, index) => item) : html`nothing`; }",
+                '{return list.length ? repeat(list, (item, index) => item) : "nothing"; }',
                 "list"
             )
         );
     });
 });
-
+describe("group", () => {
+    it("should return groups as sequence", () => {
+        expect(compile(`{{ (1,2) }}`)).toEqual(toCode("{return 1, 2}"));
+    });
+});
 describe("logical expression", () => {
     test("should support operators", () => {
         expect(compile(`{{ a > 1}}`)).toEqual(toCode("{return a > 1 }", "a"));
@@ -142,18 +147,18 @@ describe("binary expression", () => {
 describe("lookup val", () => {
     test("should support operators", () => {
         expect(compile(`{{ something.about.me }}`)).toEqual(
-            toCode("{return something.about.me }")
+            toCode("{return something.about.me }", "something")
         );
         expect(compile(`{{ something[about][me] }}`)).toEqual(
-            toCode("{return something[about][me] }")
+            toCode("{return something[about][me] }", "something")
         );
         expect(compile(`{{ something[a+1] }}`)).toEqual(
-            toCode("{return something[a+1] }")
+            toCode("{return something[a+1] }", "something")
         );
     });
     test("should support expressions in lookup", () => {
         expect(compile(`{{ something[a+b].me }}`)).toEqual(
-            toCode("{return something[a+b].me }")
+            toCode("{return something[a+b].me }", "something")
         );
     });
     test("should unary operators", () => {
@@ -172,12 +177,12 @@ describe("lookup val", () => {
 describe("set variable", () => {
     test("should declare top level variable a and initialize", () => {
         expect(compile(`{% set a = 1 %}`)).toEqual(
-            toCode("{var a; a = 1; return }")
+            toCode("{var a; return (()=>{ a = 1; })() }")
         );
     });
     test("set order.name = 1", () => {
         expect(compile(`{% set order.name = 1 %}`)).toEqual(
-            toCode("{order.name=1;return}")
+            toCode("{ return (()=>{order.name=1;})()}", "order")
         );
     });
     test("set variable", () => {
@@ -216,6 +221,21 @@ describe("complex", () => {
                     "extra-content": "This is the extra content",
                 },
             })
+        );
+    });
+});
+
+describe("members arguments", () => {
+    it("should declare order variable", () => {
+        expect(compile(`{% set order_id = order.public_id.foo.bar %}`)).toEqual(
+            toCode(
+                `{ 
+var order_id;
+return (() => {
+  order_id = order.public_id.foo.bar;
+})();}`,
+                "order"
+            )
         );
     });
 });

@@ -32,7 +32,6 @@ function parse(source) {
     try {
         return nunjucks.parser.parse(source);
     } catch (err) {
-        console.error(err);
         throw err;
     }
 }
@@ -52,16 +51,20 @@ class Parser {
                 : {};
 
         const root = parse(source);
-        return generate(this.transform(root)).code;
+        try {
+            return generate(this.transform(root)).code;
+        } catch (err) {
+            console.log("compilation err", this.stack);
+            throw err;
+        }
     }
 
     transform(node) {
         this.stack = [];
-
         this.statements = [];
         this.inTemplate = false;
 
-        const templateStatements = this.wrap(node);
+        const templateStatements = this.wrapTemplate(node);
 
         const block = t.blockStatement([
             ...this.statements,
@@ -73,6 +76,7 @@ class Parser {
 
         traverse(t.file(t.program([block])), {
             AssignmentExpression(path) {
+                // console.log(path.node)
                 if (path.find((path) => path.isMemberExpression())) {
                     return;
                 }
@@ -80,6 +84,7 @@ class Parser {
                     return;
                 }
                 const firstPart = path.node.left.name.split(".")[0];
+                // console.log(firstPart/)
                 if (
                     !(
                         path.scope.hasBinding(firstPart) ||
@@ -92,11 +97,25 @@ class Parser {
             },
             Identifier(path) {
                 // skip if is not a top level identifier
+                if (
+                    t.isMemberExpression(path.parent) &&
+                    t.isIdentifier(path.parent.object)
+                ) {
+                    const name = path.parent.object.name;
+                    if (
+                        !(
+                            path.scope.hasBinding(name) ||
+                            path.scope.parentHasBinding(name)
+                        ) &&
+                        !variblesInScope.includes(name)
+                    )
+                        variblesInScope.push(name);
+                    return;
+                }
                 if (path.find((path) => path.isMemberExpression())) {
                     return;
                 }
                 const firstPart = path.node.name.split(".")[0];
-
                 if (
                     !(
                         path.scope.hasBinding(firstPart) ||
@@ -149,128 +168,113 @@ class Parser {
     exit() {
         this.stack.pop();
     }
-    wrap(node) {
-        const { statements, inTemplate, parsedPartials } = this;
 
+    wrapTemplate(node) {
         if (node instanceof n.NodeList) {
             if (
-                node.children.some(
-                    (it) =>
-                        it instanceof n.Output &&
-                        it.children[0] instanceof n.TemplateData
-                )
+                // !node.children.some(
+                //     (it) =>
+                //         it instanceof n.Output &&
+                //         it.children[0] instanceof n.TemplateData
+                // ) ||
+                node.children.length === 1
             ) {
-                let prevRawData = "";
-                let elements = [],
-                    expressions = [];
+                if (node.children.length === 1)
+                    return this.wrap(node.children[0]);
+                return node.children.map((it) => this.wrap(it));
+            }
+            this.inTemplate = true;
+            let prevRawData = "";
+            let elements = [];
+            let expressions = [];
 
-                // if (
-                //     !(node.children.length % 2) &&
-                //     !isTemplateData(node.children[0])
-                // ) {
-                //     // if children are even we should add one more element
-                //     // to top or bottom
-                //     elements.push(
-                //         t.templateElement({
-                //             raw: "",
-                //         })
-                //     );
-                // }
-
-                node.children.forEach((child) => {
-                    if (isTemplateData(child)) {
-                        prevRawData += child.children
-                            .map((it) => it.value)
-                            .join("");
+            node.children.forEach((child) => {
+                if (isTemplateData(child)) {
+                    prevRawData += child.children
+                        .map((it) => it.value)
+                        .join("");
+                } else {
+                    elements.push(t.templateElement({ raw: prevRawData }));
+                    prevRawData = "";
+                    if (child instanceof n.Output) {
+                        const r = this.wrap(child.children[0]);
+                        expressions = [...expressions, r];
                     } else {
-                        elements.push(t.templateElement({ raw: prevRawData }));
-                        prevRawData = "";
-                        if (child instanceof n.Output) {
-                            const r = this.wrap(child.children[0]);
-                            expressions = [...expressions, r];
-                        } else {
-                            this.inTemplate = true;
-                            expressions = expressions.concat(this.wrap(child));
-                            this.inTemplate = false;
-                        }
+                        expressions = expressions.concat(this.wrap(child));
                     }
-                });
-
-                elements.push(t.templateElement({ raw: prevRawData }));
-
-                // if (
-                //     !(node.children.length % 2) &&
-                //     isTemplateData(node.children[0])
-                // ) {
-                //     // if children are even we should add one more element
-                //     // to top or bottom
-                //     elements.push(
-                //         t.templateElement({
-                //             raw: "",
-                //         })
-                //     );
-                // }
-                try {
-                    return t.taggedTemplateExpression(
-                        t.identifier("html"),
-
-                        t.templateLiteral(elements, expressions)
-                    );
-                } catch (err) {
-                    console.log(elements, expressions);
-                    throw err;
                 }
-            }
-            if (node.children.length === 1) {
-                return this.wrap(node.children[0]);
-            }
+            });
 
+            elements.push(t.templateElement({ raw: prevRawData }));
+
+            try {
+                return t.taggedTemplateExpression(
+                    t.identifier("html"),
+                    t.templateLiteral(
+                        elements,
+                        expressions.filter((it) => it)
+                    )
+                );
+            } catch (e) {
+                console.log("expressions", expressions);
+                throw e;
+            } finally {
+                this.inTemplate = false;
+            }
+        }
+        return this.wrap(node);
+    }
+    wrap(node) {
+        const { inTemplate, parsedPartials } = this;
+
+        if (node instanceof n.Output) {
+            return this.wrap(node.children[0]);
+        }
+        if (node instanceof n.Group) {
+            return t.sequenceExpression(
+                node.children.map((it) => this.wrap(it))
+            );
+        }
+
+        if (node instanceof n.NodeList) {
+            // TODO get rid of this
+            if (node.children.length === 1) return this.wrap(node.children[0]);
             return node.children.map((it) => this.wrap(it));
         }
+
         if (node instanceof n.Set) {
-            if (inTemplate) {
-                return t.callExpression(
-                    t.arrowFunctionExpression(
-                        [],
-                        t.blockStatement(
-                            node.targets.map((target) =>
-                                t.expressionStatement(
-                                    t.assignmentExpression(
-                                        "=",
-                                        this.wrap(target),
-                                        this.wrap(node.value)
-                                    )
+            // if (inTemplate) {
+            return t.callExpression(
+                t.arrowFunctionExpression(
+                    [],
+                    t.blockStatement(
+                        node.targets.map((target) =>
+                            t.expressionStatement(
+                                t.assignmentExpression(
+                                    "=",
+                                    this.wrap(target),
+                                    this.wrap(node.value)
                                 )
                             )
                         )
-                    ),
-                    []
-                );
-            } else {
-                node.targets.map((target) => {
-                    statements.push(
-                        t.expressionStatement(
-                            t.assignmentExpression(
-                                "=",
-                                this.wrap(target),
-                                this.wrap(node.value)
-                            )
-                        )
-                    );
-                });
-                return;
-                // statements.push(
-                //     t.variableDeclaration(
-                //         "var",
-                //         node.targets.map((target) =>
-                //             t.variableDeclarator(
-                //                 t.identifier(target.value),
-                //                 this.wrap(node.value)
-                //             )
-                //         )
-                //     )
-                // );
-            }
+                    )
+                ),
+                []
+            );
+            // } else {
+            //     node.targets.map((target) => {
+            //         this.statements.push(
+            //             t.expressionStatement(
+            //                 t.assignmentExpression(
+            //                     "=",
+            //                     this.wrap(target),
+            //                     this.wrap(node.value)
+            //                 )
+            //             )
+            //         );
+            //     });
+            //     return;
+            // }
         }
         if (node instanceof n.Include) {
             if (
@@ -278,7 +282,9 @@ class Parser {
                 node.template.value in parsedPartials
             ) {
                 this.enter("include", node.template.value);
-                const r = this.wrap(parsedPartials[node.template.value]);
+                const r = this.wrapTemplate(
+                    parsedPartials[node.template.value]
+                );
                 this.exit();
 
                 return r;
@@ -305,7 +311,7 @@ class Parser {
                 return t.callExpression(
                     t.identifier(`_F.${node.name.value}`),
                     // this.wrap(),
-                    [].concat(this.wrap(node.args))
+                    [].concat(this.wrap(node.args, false))
                 );
             }
         }
@@ -352,25 +358,11 @@ class Parser {
         }
 
         if (node instanceof n.If || node instanceof n.InlineIf) {
-            if (node.else_) {
-                return t.conditionalExpression(
-                    this.wrap(node.cond),
-                    this.wrap(node.body),
-                    this.wrap(node.else_)
-                );
-            } else {
-                try {
-                    return t.logicalExpression(
-                        "&&",
-                        this.wrap(node.cond),
-                        this.wrap(node.body)
-                    );
-                } catch (err) {
-                    console.log(this.stack, this.inTemplate);
-                    console.log(node.body);
-                    throw err;
-                }
-            }
+            return t.conditionalExpression(
+                this.wrap(node.cond),
+                this.wrapTemplate(node.body),
+                node.else_ ? this.wrapTemplate(node.else_) : t.stringLiteral("")
+            );
         }
 
         if (node instanceof n.For) {
@@ -394,7 +386,7 @@ class Parser {
                                 : this.wrap(node.name),
                             t.identifier("index"),
                         ],
-                        this.wrap(node.body)
+                        this.wrapTemplate(node.body)
                     ),
                 ]
             );
@@ -405,7 +397,7 @@ class Parser {
                           t.identifier("length")
                       ),
                       repeatCallExpression,
-                      this.wrap(node.else_)
+                      this.wrapTemplate(node.else_)
                   )
                 : repeatCallExpression;
         }
