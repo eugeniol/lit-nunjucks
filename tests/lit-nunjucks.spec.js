@@ -52,11 +52,7 @@ describe("filters", () => {
 
 describe("if else", () => {
     test("{% if customer.authorized %} ", () => {
-        console.log(
-            compile(
-                `{{ form_billing_expiration_date }}{{ payment.cc_exp_date }}`
-            )
-        );
+        compile(`{{ form_billing_expiration_date }}{{ payment.cc_exp_date }}`);
     });
     test("should compile if else", () => {
         expect(compile(`{%if question %}yes{%else%}no{% endif %}`)).toEqual(
@@ -215,13 +211,11 @@ describe("comments", () => {
 
 describe("complex", () => {
     test("should support partials", () => {
-        console.log(
-            compile(`{%include 'extra-content'%}`, {
-                partials: {
-                    "extra-content": "This is the extra content",
-                },
-            })
-        );
+        compile(`{%include 'extra-content'%}`, {
+            partials: {
+                "extra-content": "This is the extra content",
+            },
+        });
     });
 });
 

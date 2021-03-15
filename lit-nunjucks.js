@@ -54,7 +54,6 @@ class Parser {
         try {
             return generate(this.transform(root)).code;
         } catch (err) {
-            console.log("compilation err", this.stack);
             throw err;
         }
     }
@@ -76,7 +75,6 @@ class Parser {
 
         traverse(t.file(t.program([block])), {
             AssignmentExpression(path) {
-                // console.log(path.node)
                 if (path.find((path) => path.isMemberExpression())) {
                     return;
                 }
@@ -84,7 +82,6 @@ class Parser {
                     return;
                 }
                 const firstPart = path.node.left.name.split(".")[0];
-                // console.log(firstPart/)
                 if (
                     !(
                         path.scope.hasBinding(firstPart) ||
@@ -216,7 +213,6 @@ class Parser {
                     )
                 );
             } catch (e) {
-                console.log("expressions", expressions);
                 throw e;
             } finally {
                 this.inTemplate = false;
