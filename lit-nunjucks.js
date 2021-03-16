@@ -4,13 +4,18 @@ const t = require("@babel/types");
 const { default: traverse } = require("@babel/traverse");
 
 const n = nunjucks.nodes;
-const snakeCase = require("lodash/snakeCase");
-const { map, mapValues } = require("lodash");
+
+const mapValues = (obj, fn) =>
+    Object.entries(obj).reduce((a, [key, val]) => {
+        a[key] = fn(val);
+        return a;
+    }, {});
 
 const LOGICAL_EXPRESSIONS = {
     Or: "||",
     And: "&&",
 };
+
 const BINARY_EXPRESSIONS = {
     In: "in",
     Is: "===",
@@ -59,9 +64,7 @@ class Parser {
     }
 
     transform(node) {
-        this.stack = [];
         this.statements = [];
-        this.inTemplate = false;
 
         const templateStatements = this.wrapTemplate(node);
 
@@ -159,28 +162,14 @@ class Parser {
             ])
         );
     }
-    enter(tag, ...args) {
-        this.stack.unshift([tag, ...args]);
-    }
-    exit() {
-        this.stack.pop();
-    }
 
     wrapTemplate(node) {
         if (node instanceof n.NodeList) {
-            if (
-                // !node.children.some(
-                //     (it) =>
-                //         it instanceof n.Output &&
-                //         it.children[0] instanceof n.TemplateData
-                // ) ||
-                node.children.length === 1
-            ) {
+            if (node.children.length === 1) {
                 if (node.children.length === 1)
                     return this.wrap(node.children[0]);
                 return node.children.map((it) => this.wrap(it));
             }
-            this.inTemplate = true;
             let prevRawData = "";
             let elements = [];
             let expressions = [];
@@ -204,24 +193,18 @@ class Parser {
 
             elements.push(t.templateElement({ raw: prevRawData }));
 
-            try {
-                return t.taggedTemplateExpression(
-                    t.identifier("html"),
-                    t.templateLiteral(
-                        elements,
-                        expressions.filter((it) => it)
-                    )
-                );
-            } catch (e) {
-                throw e;
-            } finally {
-                this.inTemplate = false;
-            }
+            return t.taggedTemplateExpression(
+                t.identifier("html"),
+                t.templateLiteral(
+                    elements,
+                    expressions.filter((it) => it)
+                )
+            );
         }
         return this.wrap(node);
     }
     wrap(node) {
-        const { inTemplate, parsedPartials } = this;
+        const { parsedPartials } = this;
 
         if (node instanceof n.Output) {
             return this.wrap(node.children[0]);
@@ -253,7 +236,6 @@ class Parser {
         }
 
         if (node instanceof n.Set) {
-            // if (inTemplate) {
             return t.callExpression(
                 t.arrowFunctionExpression(
                     [],
@@ -271,33 +253,13 @@ class Parser {
                 ),
                 []
             );
-            // } else {
-            //     node.targets.map((target) => {
-            //         this.statements.push(
-            //             t.expressionStatement(
-            //                 t.assignmentExpression(
-            //                     "=",
-            //                     this.wrap(target),
-            //                     this.wrap(node.value)
-            //                 )
-            //             )
-            //         );
-            //     });
-            //     return;
-            // }
         }
         if (node instanceof n.Include) {
             if (
                 node.template instanceof n.Literal &&
                 node.template.value in parsedPartials
             ) {
-                this.enter("include", node.template.value);
-                const r = this.wrapTemplate(
-                    parsedPartials[node.template.value]
-                );
-                this.exit();
-
-                return r;
+                return this.wrapTemplate(parsedPartials[node.template.value]);
             } else if (!(node.template.value in parsedPartials)) {
                 throw new Error(
                     `Template include not found ${node.template.value}`
@@ -320,7 +282,6 @@ class Parser {
             if (node.name instanceof n.Symbol) {
                 return t.callExpression(
                     t.identifier(`_F.${node.name.value}`),
-                    // this.wrap(),
                     [].concat(this.wrap(node.args, false))
                 );
             }

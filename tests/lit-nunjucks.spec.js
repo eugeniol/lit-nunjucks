@@ -117,6 +117,8 @@ describe("forloop", () => {
             )
         );
     });
+
+    it("should loop thru objects", () => {});
 });
 describe("group", () => {
     it("should return groups as sequence", () => {
@@ -246,19 +248,6 @@ return (() => {
 
 describe("arrays", () => {
     it("should support arrays", () => {
-        console.log(
-            JSON.stringify(
-                compile(`
-        {% set items = [
-            { name: 'foo' },
-            { name: 'bar' },
-            { name: 'bear' }]
-        %}
-        
-        {{ items | join(",", "name") }}        
-        `)
-            )
-        );
         expect(
             compile(`
         {% set items = [
@@ -288,6 +277,4 @@ describe("arrays", () => {
             )
         );
     });
-
-
 });
