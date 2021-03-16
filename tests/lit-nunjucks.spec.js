@@ -107,6 +107,16 @@ describe("forloop", () => {
             )
         );
     });
+    it("should support filters in loop", () => {
+        expect(
+            compile(`{% for i in "foobar" | list %}{{ i }},{% endfor %}`)
+        ).toEqual(
+            toCode(
+                '{return repeat(_F.list("foobar"), (i, index) => html`${i},`);}',
+                "_F"
+            )
+        );
+    });
 });
 describe("group", () => {
     it("should return groups as sequence", () => {
@@ -232,4 +242,52 @@ return (() => {
             )
         );
     });
+});
+
+describe("arrays", () => {
+    it("should support arrays", () => {
+        console.log(
+            JSON.stringify(
+                compile(`
+        {% set items = [
+            { name: 'foo' },
+            { name: 'bar' },
+            { name: 'bear' }]
+        %}
+        
+        {{ items | join(",", "name") }}        
+        `)
+            )
+        );
+        expect(
+            compile(`
+        {% set items = [
+            { name: 'foo' },
+            { name: 'bar' },
+            { name: 'bear' }]
+        %}
+        
+        {{ items | join(",", "name") }}        
+        `)
+        ).toEqual(
+            toCode(
+                "{var items; return html`\n" +
+                    "        ${(() => {\n    items = [{\n" +
+                    '      name: "foo"\n' +
+                    "    }, {\n" +
+                    '      name: "bar"\n' +
+                    "    }, {\n" +
+                    '      name: "bear"\n' +
+                    "    }];\n" +
+                    "  })()}\n" +
+                    "        \n" +
+                    '        ${_F.join(items, ",", "name")}        \n' +
+                    "        `;\n" +
+                    "}",
+                "name,_F"
+            )
+        );
+    });
+
+
 });

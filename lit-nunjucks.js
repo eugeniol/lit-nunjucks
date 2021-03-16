@@ -226,6 +226,20 @@ class Parser {
         if (node instanceof n.Output) {
             return this.wrap(node.children[0]);
         }
+        if (node instanceof n.Array) {
+            return t.arrayExpression(node.children.map((c) => this.wrap(c)));
+        }
+        if (node instanceof n.Dict) {
+            return t.objectExpression(
+                node.children.map((pair) =>
+                    t.objectProperty(
+                        t.identifier(pair.key.value),
+                        this.wrap(pair.value)
+                    )
+                )
+            );
+        }
+
         if (node instanceof n.Group) {
             return t.sequenceExpression(
                 node.children.map((it) => this.wrap(it))
