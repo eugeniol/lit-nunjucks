@@ -1,6 +1,6 @@
 {
     "name": "lit-nunjucks",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "description": "Nunjucks compiler to lit-html",
     "main": "lit-nunjucks.js",
     "repository": {
