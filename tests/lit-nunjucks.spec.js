@@ -74,7 +74,7 @@ describe("if else", () => {
 describe("forloop", () => {
     test("should repeat items", () => {
         expect(compile(`{%for item in list %}{{item}}{% endfor%}`)).toEqual(
-            toCode("{ return repeat(list, (item, index) => item); }", "list")
+            toCode('{ return Array.isArray(list) ? repeat(list, (item, index) => item) : "" }', "list")
         );
     });
     test("should name,var in items", () => {
@@ -82,7 +82,7 @@ describe("forloop", () => {
             compile(`{%for name, value in list %}{{name}}{% endfor%}`)
         ).toEqual(
             toCode(
-                "{ return repeat(list, ({name, value}, index) => name); }",
+                "{ return Array.isArray(list) ? repeat(list, ({name, value}, index) => name) : \"\"; }",
                 "list"
             )
         );
@@ -92,7 +92,7 @@ describe("forloop", () => {
             compile(`{%for item in list %}<div>{{item}}</div>{% endfor%}`)
         ).toEqual(
             toCode(
-                "{ return repeat(list, (item, index) => html`<div>${item}</div>`); }",
+                "{ return Array.isArray(list) ? repeat(list, (item, index) => html`<div>${item}</div>`) : \"\"; }",
                 "list"
             )
         );
@@ -102,7 +102,7 @@ describe("forloop", () => {
             compile(`{%for item in list %}{{item}}{%else%}nothing{% endfor%}`)
         ).toEqual(
             toCode(
-                '{return list.length ? repeat(list, (item, index) => item) : "nothing"; }',
+                '{return Array.isArray(list) && list.length ? repeat(list, (item, index) => item) : "nothing"; }',
                 "list"
             )
         );
@@ -112,7 +112,7 @@ describe("forloop", () => {
             compile(`{% for i in "foobar" | list %}{{ i }},{% endfor %}`)
         ).toEqual(
             toCode(
-                '{return repeat(_F.list("foobar"), (i, index) => html`${i},`);}',
+                '{return Array.isArray(_F.list("foobar")) ? repeat(_F.list("foobar"), (i, index) => html`${i},`):"";}',
                 "_F"
             )
         );

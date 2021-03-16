@@ -33,7 +33,7 @@ const isTemplateData = (child) =>
     child instanceof n.Output &&
     child.children.every((it) => it instanceof n.TemplateData);
 
-function parse(source) {
+function parseNunjucks(source) {
     try {
         return nunjucks.parser.parse(source);
     } catch (err) {
@@ -45,19 +45,27 @@ function compile(source, opts) {
     return new Parser(opts).compile(source);
 }
 
+function parse(source, opts) {
+    return new Parser(opts).parse(source);
+}
+
 class Parser {
     constructor(opts) {
         this.opts = opts;
     }
     compile(source) {
+        const ast = this.parse(source);
+        return generate(ast).code;
+    }
+    parse(source) {
         this.parsedPartials =
             this.opts && this.opts.partials
-                ? mapValues(this.opts.partials, parse)
+                ? mapValues(this.opts.partials, parseNunjucks)
                 : {};
 
-        const root = parse(source);
+        const root = parseNunjucks(source);
         try {
-            return generate(this.transform(root)).code;
+            return this.transform(root);
         } catch (err) {
             throw err;
         }
@@ -282,6 +290,7 @@ class Parser {
             if (node.name instanceof n.Symbol) {
                 return t.callExpression(
                     t.identifier(`_F.${node.name.value}`),
+                    // this.wrap(),
                     [].concat(this.wrap(node.args, false))
                 );
             }
@@ -337,10 +346,11 @@ class Parser {
         }
 
         if (node instanceof n.For) {
+            const array = this.wrap(node.arr);
             const repeatCallExpression = t.callExpression(
                 t.identifier("repeat"),
                 [
-                    this.wrap(node.arr),
+                    array,
                     t.arrowFunctionExpression(
                         [
                             node.name instanceof n.Array
@@ -361,20 +371,30 @@ class Parser {
                     ),
                 ]
             );
-            return node.else_
-                ? t.conditionalExpression(
-                      t.memberExpression(
-                          this.wrap(node.arr),
-                          t.identifier("length")
-                      ),
-                      repeatCallExpression,
-                      this.wrapTemplate(node.else_)
-                  )
-                : repeatCallExpression;
+
+            const isArray = t.callExpression(t.identifier("Array.isArray"), [
+                array,
+            ]);
+            
+            return t.conditionalExpression(
+                node.else_
+                    ? t.logicalExpression(
+                          "&&",
+                          isArray,
+                          t.memberExpression(
+                              this.wrap(node.arr),
+                              t.identifier("length")
+                          )
+                      )
+                    : isArray,
+
+                repeatCallExpression,
+                node.else_ ? this.wrapTemplate(node.else_) : t.stringLiteral('')
+            );
         }
 
         throw [node.typename, node];
     }
 }
 
-module.exports = { compile };
+module.exports = { compile, parse, Parser };
