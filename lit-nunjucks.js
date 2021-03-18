@@ -224,7 +224,7 @@ class Parser {
             return t.objectExpression(
                 node.children.map((pair) =>
                     t.objectProperty(
-                        t.identifier(pair.key.value),
+                        t.stringLiteral(pair.key.value),
                         this.wrap(pair.value)
                     )
                 )
