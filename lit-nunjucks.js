@@ -130,7 +130,7 @@ class Parser {
                         path.scope.parentHasBinding(firstPart)
                     ) &&
                     !variblesInScope.includes(firstPart) &&
-                    !["html", "repeat"].includes(firstPart)
+                    !["html", "repeat", "_F"].includes(firstPart)
                 ) {
                     variblesInScope.push(firstPart);
                 }
@@ -153,6 +153,7 @@ class Parser {
                         )
                     )
                 ),
+                t.identifier("_F"),
             ],
             t.blockStatement([
                 ...(variblesToDeclare.length
@@ -163,6 +164,7 @@ class Parser {
                                   t.variableDeclarator(t.identifier(target))
                               )
                           ),
+                          
                       ]
                     : []),
                 ...this.statements,
@@ -351,6 +353,14 @@ class Parser {
                 t.identifier("repeat"),
                 [
                     array,
+
+                    t.arrowFunctionExpression(
+                        [t.identifier("t")],
+                        t.callExpression(t.identifier("JSON.stringify"), [
+                            t.identifier("t"),
+                        ])
+                    ),
+
                     t.arrowFunctionExpression(
                         [
                             node.name instanceof n.Array
@@ -375,7 +385,7 @@ class Parser {
             const isArray = t.callExpression(t.identifier("Array.isArray"), [
                 array,
             ]);
-            
+
             return t.conditionalExpression(
                 node.else_
                     ? t.logicalExpression(
@@ -389,7 +399,7 @@ class Parser {
                     : isArray,
 
                 repeatCallExpression,
-                node.else_ ? this.wrapTemplate(node.else_) : t.stringLiteral('')
+                node.else_ ? this.wrapTemplate(node.else_) : t.stringLiteral("")
             );
         }
 
