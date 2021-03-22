@@ -164,7 +164,6 @@ class Parser {
                                   t.variableDeclarator(t.identifier(target))
                               )
                           ),
-                          
                       ]
                     : []),
                 ...this.statements,
@@ -216,6 +215,21 @@ class Parser {
     wrap(node) {
         const { parsedPartials } = this;
 
+        if (
+            node instanceof n.Output &&
+            node.children.length === 1 &&
+            node.children[0] instanceof n.TemplateData
+        ) {
+            return t.taggedTemplateExpression(
+                t.identifier("html"),
+                t.templateLiteral(
+                    node.children.map((c) =>
+                        t.templateElement({ raw: c.value })
+                    ),
+                    []
+                )
+            );
+        }
         if (node instanceof n.Output) {
             return this.wrap(node.children[0]);
         }
@@ -354,12 +368,12 @@ class Parser {
                 [
                     array,
 
-                    t.arrowFunctionExpression(
-                        [t.identifier("t")],
-                        t.callExpression(t.identifier("JSON.stringify"), [
-                            t.identifier("t"),
-                        ])
-                    ),
+                    // t.arrowFunctionExpression(
+                    //     [t.identifier("t")],
+                    //     t.callExpression(t.identifier("JSON.stringify"), [
+                    //         t.identifier("t"),
+                    //     ])
+                    // ),
 
                     t.arrowFunctionExpression(
                         [

@@ -3,7 +3,7 @@ const babel = require("@babel/parser");
 const { default: generate } = require("@babel/generator");
 
 const toCode = (src, args = "") =>
-    generate(babel.parse(`function template({${args}}) ${src}`)).code;
+    generate(babel.parse(`function template({${args}}, _F) ${src}`)).code;
 
 describe("outputs", () => {
     test("should return just value", () =>
@@ -11,8 +11,8 @@ describe("outputs", () => {
             toCode("{ return output; }", "output")
         ));
     test("should return just html", () =>
-        expect(compile(`source with no vars`)).toEqual(
-            toCode('{ return "source with no vars"; }')
+        expect(compile(`<p>source with no vars</p>`)).toEqual(
+            toCode('{ return html`<p>source with no vars</p>`; }')
         ));
     test("should return a template with leading html", () => {
         expect(compile(`{{ output }} `)).toEqual(
@@ -36,16 +36,13 @@ describe("outputs", () => {
 describe("filters", () => {
     test("should reutrn filter call", () => {
         expect(compile(`{{ a|filterThis(1) }}`)).toEqual(
-            toCode("{ return _F.filterThis(a, 1); }", "_F,a")
+            toCode("{ return _F.filterThis(a, 1); }", "a")
         );
     });
 
     test("should reutrn filter call in template", () => {
         expect(compile(`<div>{{ a|filterThis(1) }}</div>`)).toEqual(
-            toCode(
-                "{ return html`<div>${_F.filterThis(a, 1)}</div>`; }",
-                "_F,a"
-            )
+            toCode("{ return html`<div>${_F.filterThis(a, 1)}</div>`; }", "a")
         );
     });
 });
@@ -56,7 +53,7 @@ describe("if else", () => {
     });
     test("should compile if else", () => {
         expect(compile(`{%if question %}yes{%else%}no{% endif %}`)).toEqual(
-            toCode('{ return question ? "yes": "no" }', "question")
+            toCode('{ return question ? html`yes`: html`no` }', "question")
         );
     });
     test("should left side if else", () => {
@@ -66,7 +63,7 @@ describe("if else", () => {
     });
     test("should compile if", () => {
         expect(compile(`{%if question %}yes{% endif %}`)).toEqual(
-            toCode('{ return question ? "yes" : "" }', "question")
+            toCode('{ return question ? html`yes` : "" }', "question")
         );
     });
 });
@@ -74,7 +71,10 @@ describe("if else", () => {
 describe("forloop", () => {
     test("should repeat items", () => {
         expect(compile(`{%for item in list %}{{item}}{% endfor%}`)).toEqual(
-            toCode('{ return Array.isArray(list) ? repeat(list, (item, index) => item) : "" }', "list")
+            toCode(
+                '{ return Array.isArray(list) ? repeat(list, (item, index) => item) : "" }',
+                "list"
+            )
         );
     });
     test("should name,var in items", () => {
@@ -82,7 +82,7 @@ describe("forloop", () => {
             compile(`{%for name, value in list %}{{name}}{% endfor%}`)
         ).toEqual(
             toCode(
-                "{ return Array.isArray(list) ? repeat(list, ({name, value}, index) => name) : \"\"; }",
+                '{ return Array.isArray(list) ? repeat(list, ({name, value}, index) => name) : ""; }',
                 "list"
             )
         );
@@ -92,7 +92,7 @@ describe("forloop", () => {
             compile(`{%for item in list %}<div>{{item}}</div>{% endfor%}`)
         ).toEqual(
             toCode(
-                "{ return Array.isArray(list) ? repeat(list, (item, index) => html`<div>${item}</div>`) : \"\"; }",
+                '{ return Array.isArray(list) ? repeat(list, (item, index) => html`<div>${item}</div>`) : ""; }',
                 "list"
             )
         );
@@ -102,7 +102,7 @@ describe("forloop", () => {
             compile(`{%for item in list %}{{item}}{%else%}nothing{% endfor%}`)
         ).toEqual(
             toCode(
-                '{return Array.isArray(list) && list.length ? repeat(list, (item, index) => item) : "nothing"; }',
+                '{return Array.isArray(list) && list.length ? repeat(list, (item, index) => item) : html`nothing`; }',
                 "list"
             )
         );
@@ -112,8 +112,7 @@ describe("forloop", () => {
             compile(`{% for i in "foobar" | list %}{{ i }},{% endfor %}`)
         ).toEqual(
             toCode(
-                '{return Array.isArray(_F.list("foobar")) ? repeat(_F.list("foobar"), (i, index) => html`${i},`):"";}',
-                "_F"
+                '{return Array.isArray(_F.list("foobar")) ? repeat(_F.list("foobar"), (i, index) => html`${i},`):"";}'
             )
         );
     });
@@ -262,18 +261,18 @@ describe("arrays", () => {
             toCode(
                 "{var items; return html`\n" +
                     "        ${(() => {\n    items = [{\n" +
-                    '      name: "foo"\n' +
+                    '      "name": "foo"\n' +
                     "    }, {\n" +
-                    '      name: "bar"\n' +
+                    '      "name": "bar"\n' +
                     "    }, {\n" +
-                    '      name: "bear"\n' +
+                    '      "name": "bear"\n' +
                     "    }];\n" +
                     "  })()}\n" +
                     "        \n" +
                     '        ${_F.join(items, ",", "name")}        \n' +
                     "        `;\n" +
                     "}",
-                "name,_F"
+                ""
             )
         );
     });
