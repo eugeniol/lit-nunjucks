@@ -368,12 +368,12 @@ class Parser {
                 [
                     array,
 
-                    // t.arrowFunctionExpression(
-                    //     [t.identifier("t")],
-                    //     t.callExpression(t.identifier("JSON.stringify"), [
-                    //         t.identifier("t"),
-                    //     ])
-                    // ),
+                    t.arrowFunctionExpression(
+                        [t.identifier("t")],
+                        t.callExpression(t.identifier("JSON.stringify"), [
+                            t.identifier("t"),
+                        ])
+                    ),
 
                     t.arrowFunctionExpression(
                         [
