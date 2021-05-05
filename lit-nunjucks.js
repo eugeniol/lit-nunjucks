@@ -312,8 +312,14 @@ class Parser {
             }
         }
         if (node instanceof n.Literal) {
+            if (node.value === null) {
+                return t.nullLiteral();
+            }
             if (typeof node.value === "string") {
                 return t.stringLiteral(node.value);
+            }
+            if (typeof node.value === "boolean") {
+                return t.booleanLiteral(node.value);
             }
             if (typeof node.value === "number") {
                 return t.numericLiteral(node.value);
@@ -364,17 +370,8 @@ class Parser {
         if (node instanceof n.For) {
             const array = this.wrap(node.arr);
             const repeatCallExpression = t.callExpression(
-                t.identifier("repeat"),
+                t.memberExpression(array, t.identifier("map")),
                 [
-                    array,
-
-                    t.arrowFunctionExpression(
-                        [t.identifier("t")],
-                        t.callExpression(t.identifier("JSON.stringify"), [
-                            t.identifier("t"),
-                        ])
-                    ),
-
                     t.arrowFunctionExpression(
                         [
                             node.name instanceof n.Array
