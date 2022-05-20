@@ -171,6 +171,14 @@ describe("lookup val", () => {
     test("should unary operators", () => {
         expect(compile(`{{ not a}}`)).toEqual(toCode("{return !a }", "a"));
     });
+    test("should read nested properties or arrays", () => {
+        expect(compile(`{{a.selling_plan.options[0].value}}`)).toEqual(
+            toCode("{return a.selling_plan.options[0].value;}", "a")
+        );
+        expect(compile(`{{a[0].value}}`)).toEqual(
+            toCode("{return a[0].value;}", "a")
+        );
+    });
     test("should binary operators", () => {
         expect(compile(`{{ a and 1}}`)).toEqual(
             toCode("{return a && 1 }", "a")
@@ -244,18 +252,19 @@ return (() => {
         );
     });
 });
+
 describe("literals", () => {
     it("should support true/false", () => {
         expect(compile(" {% set foo = true %} ")).toEqual(
-            toCode("{var foo; return html` ${(()=>{foo=true;})()} `;}","")
+            toCode("{var foo; return html` ${(()=>{foo=true;})()} `;}", "")
         );
         expect(compile(" {% set foo = false %} ")).toEqual(
-            toCode("{var foo; return html` ${(()=>{foo=false;})()} `;}","")
+            toCode("{var foo; return html` ${(()=>{foo=false;})()} `;}", "")
         );
     });
     it("should support null", () => {
         expect(compile(" {% set foo = null %} ")).toEqual(
-            toCode("{var foo; return html` ${(()=>{foo=null;})()} `;}","")
+            toCode("{var foo; return html` ${(()=>{foo=null;})()} `;}", "")
         );
     });
 });

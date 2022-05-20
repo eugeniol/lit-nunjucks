@@ -294,9 +294,12 @@ class Parser {
             return t.memberExpression(
                 this.wrap(node.target),
                 node.val instanceof n.Literal
-                    ? t.identifier(node.val.value)
+                    ? Number.isInteger(node.val.value)
+                        ? t.numericLiteral(node.val.value)
+                        : t.identifier(node.val.value)
                     : this.wrap(node.val),
-                !(node.val instanceof n.Literal)
+                !(node.val instanceof n.Literal) ||
+                    Number.isInteger(node.val.value)
             );
         }
         if (node instanceof n.Symbol) {
