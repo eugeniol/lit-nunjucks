@@ -284,6 +284,9 @@ class Parser {
                 node.template.value in parsedPartials
             ) {
                 return this.wrapTemplate(parsedPartials[node.template.value]);
+            } else if (!(node.template.value in parsedPartials) && node.ignoreMissing) {
+                return  t.nullLiteral();
+                return this.wrapTemplate(parsedPartials[node.template.value]);
             } else if (!(node.template.value in parsedPartials)) {
                 throw new Error(
                     `Template include not found ${node.template.value}`
