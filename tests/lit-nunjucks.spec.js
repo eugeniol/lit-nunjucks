@@ -1,4 +1,5 @@
-const { compile } = require("../lit-nunjucks");
+const fs = require("fs");
+const { compile, Parser } = require("../lit-nunjucks");
 const babel = require("@babel/parser");
 const { default: generate } = require("@babel/generator");
 
