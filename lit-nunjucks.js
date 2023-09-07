@@ -2,7 +2,7 @@ const nunjucks = require("nunjucks");
 const { default: generate } = require("@babel/generator");
 const t = require("@babel/types");
 const { default: traverse } = require("@babel/traverse");
-
+const camelCase = require("lodash/camelCase");
 const n = nunjucks.nodes;
 
 const mapValues = (obj, fn) =>
@@ -63,7 +63,7 @@ class Parser {
         shouldPrintComment: true,
         sourceFileName: "main.liquid",
       },
-      { "main.liquid": source, ...this.opts.partials }
+      { "main.liquid": source, ...(this.opts ? this.opts.partials : []) }
     );
   }
   compile(source) {
@@ -76,26 +76,73 @@ class Parser {
         : {};
 
     const root = parseNunjucks(source);
+
     try {
-      return this.transform(root);
+      this.programs = new Map();
+      return this.transform(root, {
+        outputFunctionName: "template",
+        sourceFileName: "main.liquid",
+        isMain: true,
+      });
     } catch (err) {
       throw err;
     }
   }
 
-  transform(node) {
-    this.statements = [];
+  transform(node, { outputFunctionName, sourceFileName, isMain }) {
+    if (this.programs.has(outputFunctionName)) {
+      return;
+    }
+    const returnStatement = t.returnStatement(
+      this.transformBlock(node, sourceFileName)
+    );
 
-    const templateStatements = this.transformBlock(node, "main.liquid");
+    const [variblesToDeclare, variblesInScope] =
+      this.extractVariables(returnStatement);
 
-    const block = t.blockStatement([
-      ...this.statements,
-      t.returnStatement(templateStatements),
-    ]);
+    const resultProgram = t.functionDeclaration(
+      t.identifier(outputFunctionName),
+      [
+        t.objectPattern(
+          [...variblesInScope].map((val) =>
+            t.objectProperty(t.identifier(val), t.identifier(val), false, true)
+          )
+        ),
+        t.identifier("_F"),
+      ],
+      t.blockStatement(
+        []
+          .concat(
+            variblesToDeclare.size
+              ? [
+                  t.variableDeclaration(
+                    "var",
+                    [...variblesToDeclare].map((target) =>
+                      t.variableDeclarator(t.identifier(target))
+                    )
+                  ),
+                ]
+              : []
+          )
+          .concat(isMain ? [...this.programs.values()] : [])
+          .concat([returnStatement])
+      )
+    );
 
-    let variblesToDeclare = [];
-    let variblesInScope = [];
+    if (isMain) {
+      console.log("main one");
+    }
 
+    this.programs.set(outputFunctionName, resultProgram);
+
+    return resultProgram;
+  }
+
+  extractVariables(program) {
+    const variblesToDeclare = new Set();
+    const variblesInScope = new Set();
+
+    const block = t.blockStatement([program]);
     traverse(t.file(t.program([block])), {
       AssignmentExpression(path) {
         if (path.find((path) => path.isMemberExpression())) {
@@ -110,9 +157,10 @@ class Parser {
             path.scope.hasBinding(firstPart) ||
             path.scope.parentHasBinding(firstPart)
           ) &&
-          !variblesToDeclare.includes(firstPart)
+          !variblesToDeclare.has(firstPart) &&
+          !firstPart.startsWith("template_")
         ) {
-          variblesToDeclare.push(firstPart);
+          variblesToDeclare.add(firstPart);
         }
       },
       Identifier(path) {
@@ -126,9 +174,11 @@ class Parser {
             !(
               path.scope.hasBinding(name) || path.scope.parentHasBinding(name)
             ) &&
-            !variblesInScope.includes(name)
+            !variblesInScope.has(name) &&
+            !variblesToDeclare.has(name) &&
+            !name.startsWith("template_")
           )
-            variblesInScope.push(name);
+            variblesInScope.add(name);
           return;
         }
         if (path.find((path) => path.isMemberExpression())) {
@@ -140,43 +190,17 @@ class Parser {
             path.scope.hasBinding(firstPart) ||
             path.scope.parentHasBinding(firstPart)
           ) &&
-          !variblesInScope.includes(firstPart) &&
-          !["html", "repeat", "_F"].includes(firstPart)
+          !variblesInScope.has(firstPart) &&
+          !["html", "repeat", "_F"].includes(firstPart) &&
+          !variblesToDeclare.has(firstPart) &&
+          !firstPart.startsWith("template_")
         ) {
-          variblesInScope.push(firstPart);
+          variblesInScope.add(firstPart);
         }
       },
     });
 
-    variblesInScope = variblesInScope.filter(
-      (v) => !variblesToDeclare.includes(v)
-    );
-
-    return t.functionDeclaration(
-      t.identifier("template"),
-      [
-        t.objectPattern(
-          variblesInScope.map((val) =>
-            t.objectProperty(t.identifier(val), t.identifier(val), false, true)
-          )
-        ),
-        t.identifier("_F"),
-      ],
-      t.blockStatement([
-        ...(variblesToDeclare.length
-          ? [
-              t.variableDeclaration(
-                "var",
-                variblesToDeclare.map((target) =>
-                  t.variableDeclarator(t.identifier(target))
-                )
-              ),
-            ]
-          : []),
-        ...this.statements,
-        t.returnStatement(templateStatements),
-      ])
-    );
+    return [variblesToDeclare, variblesInScope];
   }
 
   /**
@@ -230,6 +254,11 @@ class Parser {
 
     return resultNode;
   }
+
+  getFunctionName(name) {
+    return "template_" + camelCase(name);
+  }
+
   getLoc(node, templateName) {
     this._locIndex = this._locIndex || 0;
     const loc = {
@@ -243,7 +272,7 @@ class Parser {
       // identifierName: string | undefined | null;
     };
     this._locIndex++;
-    console.log(loc);
+
     return loc;
   }
   transformNode(node) {
@@ -323,10 +352,20 @@ class Parser {
         templateName in parsedPartials
       ) {
         if (templateName) this.inludeStack.unshift(templateName);
-        const restult = this.transformCodeBlock(parsedPartials[templateName]);
+
+        const outputFunctionName = this.getFunctionName(templateName);
+
+        this.transform(parsedPartials[templateName], {
+          outputFunctionName,
+          sourceFileName: templateName,
+        });
+
+        // const result = this.transformCodeBlock(parsedPartials[templateName]);
+        const result = t.callExpression(t.identifier(outputFunctionName), []);
+
         if (templateName) this.inludeStack.shift();
-        restult.loc = this.getLoc(node);
-        return restult;
+        result.loc = this.getLoc(node);
+        return result;
       } else if (!(templateName in parsedPartials) && node.ignoreMissing) {
         return t.nullLiteral();
       } else if (!(node.template.value in parsedPartials)) {
