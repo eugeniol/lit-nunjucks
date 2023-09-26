@@ -2,8 +2,16 @@ const nunjucks = require("nunjucks");
 const { default: generate } = require("@babel/generator");
 const t = require("@babel/types");
 const { default: traverse } = require("@babel/traverse");
+var camelCase = require("lodash.camelcase");
 
 const n = nunjucks.nodes;
+
+function convertKeysToCamelCase(obj) {
+  return Object.entries(obj).reduce((acc, [key, value]) => {
+    acc[camelCase(key)] = value;
+    return acc;
+  }, {});
+}
 
 const mapValues = (obj, fn) =>
   Object.entries(obj).reduce((a, [key, val]) => {
@@ -60,7 +68,7 @@ class Parser {
   parse(source) {
     this.parsedPartials =
       this.opts && this.opts.partials
-        ? mapValues(this.opts.partials, parseNunjucks)
+        ? mapValues(convertKeysToCamelCase(this.opts.partials), parseNunjucks)
         : {};
 
     const root = parseNunjucks(source);
@@ -73,6 +81,8 @@ class Parser {
 
   transform(node) {
     this.statements = [];
+
+    this.partialsMapping = {};
 
     const templateStatements = this.wrapTemplate(node);
 
@@ -141,14 +151,7 @@ class Parser {
 
     return t.functionDeclaration(
       t.identifier("template"),
-      [
-        t.objectPattern(
-          variblesInScope.map((val) =>
-            t.objectProperty(t.identifier(val), t.identifier(val), false, true)
-          )
-        ),
-        t.identifier("_F"),
-      ],
+      [t.objectPattern([]), t.identifier("_F")],
       t.blockStatement([
         ...(variblesToDeclare.length
           ? [
@@ -160,13 +163,31 @@ class Parser {
               ),
             ]
           : []),
-        ...this.statements,
-        t.returnStatement(templateStatements),
+        ...Object.values(this.partialsMapping),
+        t.functionDeclaration(
+          t.identifier("main"),
+          [],
+          t.blockStatement([
+            ...this.statements,
+            t.returnStatement(templateStatements),
+          ])
+        ),
+        t.returnStatement(t.callExpression(t.identifier("main"), [])),
       ])
     );
   }
 
-  wrapTemplate(node) {
+  wrapTemplate(node, partialName) {
+    if (partialName) {
+      if (!(partialName in this.partialsMapping)) {
+        this.partialsMapping[partialName] = this.createPartialFunction(
+          this.parsedPartials[partialName],
+          partialName
+        );
+      }
+      return t.callExpression(t.identifier(partialName), []);
+    }
+
     if (node instanceof n.NodeList) {
       if (node.children.length === 1) {
         if (node.children.length === 1) return this.wrap(node.children[0]);
@@ -183,6 +204,7 @@ class Parser {
           elements.push(t.templateElement({ raw: prevRawData }));
           prevRawData = "";
           if (child instanceof n.Output) {
+            child.children[0].value = `typeof ${child.children[0].value} === "undefined" ? args.${child.children[0].value} : ${child.children[0].value}`;
             const r = this.wrap(child.children[0]);
             expressions = [...expressions, r];
           } else {
@@ -202,6 +224,58 @@ class Parser {
       );
     }
     return this.wrap(node);
+  }
+  createPartialFunction(partialNode, partialName) {
+    const partialStatements = this.wrapTemplate(partialNode);
+
+    const identifiers = [];
+
+    const expressions =
+      (partialStatements.quasi && partialStatements.quasi.expressions) || [];
+    expressions.forEach((expression) => {
+      if (
+        expression.type === "CallExpression" &&
+        expression.callee &&
+        expression.callee.type === "ArrowFunctionExpression"
+      ) {
+        expression.callee.body.body.forEach((bodyExpression) => {
+          if (
+            bodyExpression.type === "ExpressionStatement" &&
+            bodyExpression.expression.type === "AssignmentExpression"
+          ) {
+            identifiers.push(bodyExpression.expression.left);
+          }
+        });
+      }
+    });
+
+    if (partialStatements.type === "TaggedTemplateExpression") {
+      partialStatements.quasi.expressions.forEach((it) => {
+        if (
+          it.type === "CallExpression" &&
+          it.callee &&
+          it.callee.type === "Identifier"
+        ) {
+          it.arguments = [
+            t.objectExpression([
+              t.spreadElement(t.identifier("args")),
+              ...identifiers.map((identifier) =>
+                t.objectProperty(
+                  t.stringLiteral(identifier.name || "defaultString"),
+                  identifier
+                )
+              ),
+            ]),
+          ];
+        }
+      });
+    }
+
+    return t.functionDeclaration(
+      t.identifier(partialName),
+      [t.assignmentPattern(t.identifier("args"), t.objectExpression([]))],
+      t.blockStatement([t.returnStatement(partialStatements)])
+    );
   }
   wrap(node) {
     const { parsedPartials } = this;
@@ -266,19 +340,20 @@ class Parser {
       );
     }
     if (node instanceof n.Include) {
+      const camelCaseValue = camelCase(node.template.value);
       if (
         node.template instanceof n.Literal &&
-        node.template.value in parsedPartials
+        camelCaseValue in parsedPartials
       ) {
-        return this.wrapTemplate(parsedPartials[node.template.value]);
-      } else if (
-        !(node.template.value in parsedPartials) &&
-        node.ignoreMissing
-      ) {
+        return this.wrapTemplate(
+          parsedPartials[camelCaseValue],
+          camelCaseValue
+        );
+      } else if (!(camelCaseValue in parsedPartials) && node.ignoreMissing) {
         return t.nullLiteral();
         return this.wrapTemplate(parsedPartials[node.template.value]);
-      } else if (!(node.template.value in parsedPartials)) {
-        throw new Error(`Template include not found ${node.template.value}`);
+      } else if (!(camelCaseValue in parsedPartials)) {
+        throw new Error(`Template include not found ${camelCaseValue}`);
       }
     }
     if (node instanceof n.LookupVal) {
