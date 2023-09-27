@@ -1,7 +1,7 @@
-
 const { compile, Parser } = require("../lit-nunjucks");
 const babel = require("@babel/parser");
 const { default: generate } = require("@babel/generator");
+const { TEMPLATES_LIBRARY_VARIABLE_IDENTIFIER } = require("../constants");
 
 const toCode = (src, args = "") =>
   generate(babel.parse(`function template({${args}}, _F) ${src}`)).code;
@@ -229,13 +229,19 @@ describe("comments", () => {
   });
 });
 
-describe("complex", () => {
+describe.only("complex", () => {
   test("should support partials", () => {
-    compile(`{%include 'extra-content'%}`, {
-      partials: {
-        "extra-content": "This is the extra content",
-      },
-    });
+    const out = compile(`\
+<body>
+  {% include 'extra-content' %}
+</body>`);
+    // console.log(out);
+    expect(out).toEqual(`\
+function template({}, _F) {
+  return html\`<body>
+  \${${TEMPLATES_LIBRARY_VARIABLE_IDENTIFIER}["template_extraContent"].apply(this, arguments)}
+</body>\`;
+}`);
   });
 });
 

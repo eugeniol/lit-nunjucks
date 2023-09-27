@@ -5,29 +5,19 @@ const { default: traverse } = require("@babel/traverse");
 const camelCase = require("lodash/camelCase");
 const n = nunjucks.nodes;
 
+const {
+  LOGICAL_EXPRESSIONS,
+  BINARY_EXPRESSIONS,
+  TEMPLATES_LIBRARY_VARIABLE_IDENTIFIER,
+  LIT_HTML_VARIABLE_IDENTIFIER,
+  FILTERS_VARIABLE_IDENTIFIER,
+} = require("./constants");
+
 const mapValues = (obj, fn) =>
   Object.entries(obj).reduce((a, [key, val]) => {
     a[key] = fn(val);
     return a;
   }, {});
-
-const LOGICAL_EXPRESSIONS = {
-  Or: "||",
-  And: "&&",
-};
-
-const BINARY_EXPRESSIONS = {
-  In: "in",
-  Is: "===",
-  Add: "+",
-  Concat: "+",
-  Sub: "-",
-  Mul: "*",
-  Div: "/",
-  FloorDiv: "/",
-  Mod: "%",
-  Pow: "**",
-};
 
 const isTemplateData = (child) =>
   child instanceof n.Output &&
@@ -108,7 +98,7 @@ class Parser {
             t.objectProperty(t.identifier(val), t.identifier(val), false, true)
           )
         ),
-        t.identifier("_F"),
+        t.identifier(FILTERS_VARIABLE_IDENTIFIER),
       ],
       t.blockStatement(
         []
@@ -191,7 +181,11 @@ class Parser {
             path.scope.parentHasBinding(firstPart)
           ) &&
           !variblesInScope.has(firstPart) &&
-          !["html", "repeat", "_F"].includes(firstPart) &&
+          ![
+            LIT_HTML_VARIABLE_IDENTIFIER,
+            "repeat",
+            FILTERS_VARIABLE_IDENTIFIER,
+          ].includes(firstPart) &&
           !variblesToDeclare.has(firstPart) &&
           !firstPart.startsWith("template_")
         ) {
@@ -199,6 +193,8 @@ class Parser {
         }
       },
     });
+    // maybe do it with LIT_HTML_VARIABLE_IDENTIFIER and FILTERS_VARIABLE_IDENTIFIER too to simplify the code
+    variblesInScope.delete(TEMPLATES_LIBRARY_VARIABLE_IDENTIFIER);
 
     return [variblesToDeclare, variblesInScope];
   }
@@ -245,7 +241,7 @@ class Parser {
     elements.push(t.templateElement({ raw: prevRawData }));
 
     const resultNode = t.taggedTemplateExpression(
-      t.identifier("html"),
+      t.identifier(LIT_HTML_VARIABLE_IDENTIFIER),
       t.templateLiteral(
         elements,
         expressions.filter((it) => it)
@@ -289,7 +285,7 @@ class Parser {
       node.children[0] instanceof n.TemplateData
     ) {
       return t.taggedTemplateExpression(
-        t.identifier("html"),
+        t.identifier(LIT_HTML_VARIABLE_IDENTIFIER),
         t.templateLiteral(
           node.children.map((c) => t.templateElement({ raw: c.value })),
           []
@@ -348,20 +344,32 @@ class Parser {
     if (node instanceof n.Include) {
       const templateName = node.template.value;
       if (
-        node.template instanceof n.Literal &&
-        templateName in parsedPartials
+        node.template instanceof n.Literal
+        // && templateName in parsedPartials
       ) {
         if (templateName) this.inludeStack.unshift(templateName);
 
         const outputFunctionName = this.getFunctionName(templateName);
 
-        this.transform(parsedPartials[templateName], {
-          outputFunctionName,
-          sourceFileName: templateName,
-        });
+        // this.transform(parsedPartials[templateName], {
+        //   outputFunctionName,
+        //   sourceFileName: templateName,
+        // });
 
         // const result = this.transformCodeBlock(parsedPartials[templateName]);
-        const result = t.callExpression(t.identifier(outputFunctionName), []);
+
+        const result = t.callExpression(
+          t.memberExpression(
+            t.memberExpression(
+              t.identifier(TEMPLATES_LIBRARY_VARIABLE_IDENTIFIER),
+              t.stringLiteral(outputFunctionName),
+              true
+            ),
+
+            t.identifier("apply")
+          ),
+          [t.thisExpression(), t.identifier("arguments")]
+        );
 
         if (templateName) this.inludeStack.shift();
         result.loc = this.getLoc(node);
@@ -389,7 +397,7 @@ class Parser {
     if (node instanceof n.FunCall) {
       if (node.name instanceof n.Symbol) {
         return t.callExpression(
-          t.identifier(`_F.${node.name.value}`),
+          t.identifier(`${FILTERS_VARIABLE_IDENTIFIER}.${node.name.value}`),
           // this.wrap(),
           [].concat(this.transformNode(node.args, false))
         );
