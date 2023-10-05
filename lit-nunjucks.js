@@ -2,8 +2,17 @@ const nunjucks = require("nunjucks");
 const { default: generate } = require("@babel/generator");
 const t = require("@babel/types");
 const { default: traverse } = require("@babel/traverse");
+const camelCase = require("lodash.camelcase");
+const bundleStrings = require("./bundler");
 
 const n = nunjucks.nodes;
+
+function convertKeysToCamelCase(obj = {}) {
+  return Object.entries(obj).reduce((acc, [key, value]) => {
+    acc[camelCase(key)] = value;
+    return acc;
+  }, {});
+}
 
 const mapValues = (obj, fn) =>
   Object.entries(obj).reduce((a, [key, val]) => {
@@ -41,17 +50,32 @@ function parseNunjucks(source) {
   }
 }
 
-function compile(source, opts) {
-  return new Parser(opts).compile(source);
+function combineAsts(main, opts) {
+  const { partials } = opts;
+  const partialsWithCamelCaseKeys = convertKeysToCamelCase(partials);
+
+  const modules = Object.entries({
+    main: main,
+    ...partialsWithCamelCaseKeys,
+  }).map(([name, source]) => ({
+    name: name,
+    code: new Parser(name, opts).parse(source),
+  }));
+
+  return modules;
 }
 
-function parse(source, opts) {
-  return new Parser(opts).parse(source);
+function compile(main, opts) {
+  return combineAsts(main, opts);
+}
+
+function parse(main, opts) {
+  return combineAsts(main, opts);
 }
 
 class Parser {
-  constructor(opts) {
-    this.opts = opts;
+  constructor(name, opts) {
+    (this.name = name), (this.opts = opts);
   }
   compile(source) {
     const ast = this.parse(source);
@@ -60,8 +84,10 @@ class Parser {
   parse(source) {
     this.parsedPartials =
       this.opts && this.opts.partials
-        ? mapValues(this.opts.partials, parseNunjucks)
+        ? mapValues(convertKeysToCamelCase(this.opts.partials), parseNunjucks)
         : {};
+
+    this.modulesToImport = [];
 
     const root = parseNunjucks(source);
     try {
@@ -139,16 +165,36 @@ class Parser {
       (v) => !variblesToDeclare.includes(v)
     );
 
-    return t.functionDeclaration(
-      t.identifier("template"),
-      [
-        t.objectPattern(
-          variblesInScope.map((val) =>
-            t.objectProperty(t.identifier(val), t.identifier(val), false, true)
-          )
-        ),
-        t.identifier("_F"),
-      ],
+    traverse(t.file(t.program([block])), {
+      TaggedTemplateExpression(path) {
+        path.traverse({
+          CallExpression(innerPath) {
+            if (
+              innerPath.node.callee.type === "Identifier" &&
+              innerPath.node.arguments.length === 0
+            ) {
+              const properties = [t.spreadElement(t.identifier("_state"))];
+              for (const variable of variblesToDeclare) {
+                properties.push(
+                  t.objectProperty(
+                    t.identifier(variable),
+                    t.identifier(variable)
+                  )
+                );
+              }
+              const objectArg = t.objectExpression(properties);
+
+              innerPath.node.arguments.push(objectArg);
+              innerPath.node.arguments.push(t.identifier("_F"));
+            }
+          },
+        });
+      },
+    });
+
+    const functionDeclaration = t.functionDeclaration(
+      t.identifier(this.name),
+      [t.identifier("_state"), t.identifier("_F")],
       t.blockStatement([
         ...(variblesToDeclare.length
           ? [
@@ -164,6 +210,20 @@ class Parser {
         t.returnStatement(templateStatements),
       ])
     );
+
+    const importDeclarations = this.modulesToImport.length
+      ? this.modulesToImport.map((moduleName) =>
+          t.importDeclaration(
+            [t.importDefaultSpecifier(t.identifier(moduleName))],
+            t.stringLiteral(moduleName)
+          )
+        )
+      : [];
+
+    const exportDefaultDeclaration =
+      t.exportDefaultDeclaration(functionDeclaration);
+
+    return t.program([...importDeclarations, exportDefaultDeclaration]);
   }
 
   wrapTemplate(node) {
@@ -266,11 +326,13 @@ class Parser {
       );
     }
     if (node instanceof n.Include) {
+      const camelCaseValue = camelCase(node.template.value);
       if (
         node.template instanceof n.Literal &&
-        node.template.value in parsedPartials
+        camelCaseValue in parsedPartials
       ) {
-        return this.wrapTemplate(parsedPartials[node.template.value]);
+        this.modulesToImport.push(camelCaseValue);
+        return t.callExpression(t.identifier(camelCaseValue), []);
       } else if (
         !(node.template.value in parsedPartials) &&
         node.ignoreMissing
@@ -283,7 +345,7 @@ class Parser {
     }
     if (node instanceof n.LookupVal) {
       return t.memberExpression(
-        this.wrap(node.target),
+        t.memberExpression(t.identifier("_state"), this.wrap(node.target)),
         node.val instanceof n.Literal
           ? Number.isInteger(node.val.value)
             ? t.numericLiteral(node.val.value)
