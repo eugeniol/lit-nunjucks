@@ -3,22 +3,39 @@ const { default: generate } = require("@babel/generator");
 const t = require("@babel/types");
 const { default: traverse } = require("@babel/traverse");
 const camelCase = require("lodash.camelcase");
-const bundleStrings = require("./bundler");
 
 const n = nunjucks.nodes;
 
-function convertKeysToCamelCase(obj = {}) {
-  return Object.entries(obj).reduce((acc, [key, value]) => {
-    acc[camelCase(key)] = value;
-    return acc;
-  }, {});
+function generateDestructuringAST(variableNames) {
+  const properties = variableNames.map((name) =>
+    t.objectProperty(t.identifier(name), t.identifier(name), false, true)
+  );
+  const left = t.objectPattern(properties);
+  const right = t.identifier("_state");
+
+  const declarator = t.variableDeclarator(left, right);
+
+  const declaration = t.variableDeclaration("let", [declarator]);
+
+  return declaration;
 }
 
-const mapValues = (obj, fn) =>
-  Object.entries(obj).reduce((a, [key, val]) => {
-    a[key] = fn(val);
-    return a;
-  }, {});
+function pushOrUpdate(arr, name, jsName) {
+  const obj = arr.find((item) => item.name === name);
+
+  if (obj) {
+    obj.count += 1;
+  } else {
+    arr.push({ name, jsName, count: 1 });
+    return 1;
+  }
+
+  return obj.count;
+}
+
+function removeFileExtension(filename) {
+  return filename.replace(/\.[^\.]+$/, "");
+}
 
 const LOGICAL_EXPRESSIONS = {
   Or: "||",
@@ -37,169 +54,135 @@ const BINARY_EXPRESSIONS = {
   Mod: "%",
   Pow: "**",
 };
+let allImportedModules = [];
 
 const isTemplateData = (child) =>
   child instanceof n.Output &&
   child.children.every((it) => it instanceof n.TemplateData);
 
 function parseNunjucks(source) {
-  try {
-    return nunjucks.parser.parse(source);
-  } catch (err) {
-    throw err;
+  return nunjucks.parser.parse(source);
+}
+
+function compile(source, opts) {
+  return new Parser(opts).compile(source);
+}
+
+function parse(source, { partials = {}, ...otherOpts } = {}) {
+  if (otherOpts.isModule) {
+    return Object.entries({
+      "main.liquid": source,
+      ...partials,
+    }).reduce((acc, [path, content]) => {
+      acc[path] = new Parser({
+        name: path,
+        jsName: camelCase(removeFileExtension(path)),
+        ...otherOpts,
+        partials: partials,
+      }).parse(content);
+      return acc;
+    }, {});
   }
-}
 
-function combineAsts(main, opts) {
-  const { partials } = opts;
-  const partialsWithCamelCaseKeys = convertKeysToCamelCase(partials);
-
-  const modules = Object.entries({
-    main: main,
-    ...partialsWithCamelCaseKeys,
-  }).map(([name, source]) => ({
-    name: name,
-    code: new Parser(name, opts).parse(source),
-  }));
-
-  return modules;
-}
-
-function compile(main, opts) {
-  return combineAsts(main, opts);
-}
-
-function parse(main, opts) {
-  return combineAsts(main, opts);
+  return new Parser({
+    ...otherOpts,
+    name: "template",
+    jsName: "template",
+  }).parse(source);
 }
 
 class Parser {
-  constructor(name, opts) {
-    (this.name = name), (this.opts = opts);
+  constructor(opts = {}) {
+    this.opts = opts;
+    this.localScopeVariables = [];
   }
+
   compile(source) {
     const ast = this.parse(source);
     return generate(ast).code;
   }
+
   parse(source) {
-    this.parsedPartials =
-      this.opts && this.opts.partials
-        ? mapValues(convertKeysToCamelCase(this.opts.partials), parseNunjucks)
-        : {};
-
     this.modulesToImport = [];
-
-    const root = parseNunjucks(source);
-    try {
-      return this.transform(root);
-    } catch (err) {
-      throw err;
-    }
+    return this.transform(parseNunjucks(source));
   }
 
   transform(node) {
     this.statements = [];
-
     const templateStatements = this.wrapTemplate(node);
-
     const block = t.blockStatement([
       ...this.statements,
       t.returnStatement(templateStatements),
     ]);
 
-    let variblesToDeclare = [];
+    let variblesToDeclare = [...this.localScopeVariables];
     let variblesInScope = [];
 
     traverse(t.file(t.program([block])), {
-      AssignmentExpression(path) {
-        if (path.find((path) => path.isMemberExpression())) {
-          return;
-        }
-        if (!t.isIdentifier(path.node.left)) {
-          return;
-        }
-        const firstPart = path.node.left.name.split(".")[0];
-        if (
-          !(
-            path.scope.hasBinding(firstPart) ||
-            path.scope.parentHasBinding(firstPart)
-          ) &&
-          !variblesToDeclare.includes(firstPart)
-        ) {
-          variblesToDeclare.push(firstPart);
-        }
-      },
-      Identifier(path) {
-        // skip if is not a top level identifier
-        if (
-          t.isMemberExpression(path.parent) &&
-          t.isIdentifier(path.parent.object)
-        ) {
-          const name = path.parent.object.name;
-          if (
-            !(
-              path.scope.hasBinding(name) || path.scope.parentHasBinding(name)
-            ) &&
-            !variblesInScope.includes(name)
-          )
-            variblesInScope.push(name);
-          return;
-        }
-        if (path.find((path) => path.isMemberExpression())) {
-          return;
-        }
-        const firstPart = path.node.name.split(".")[0];
-        if (
-          !(
-            path.scope.hasBinding(firstPart) ||
-            path.scope.parentHasBinding(firstPart)
-          ) &&
-          !variblesInScope.includes(firstPart) &&
-          !["html", "repeat", "_F"].includes(firstPart)
-        ) {
-          variblesInScope.push(firstPart);
-        }
-      },
+      CallExpression: (path) =>
+        this.handleCallExpression(path, variblesInScope),
+      AssignmentExpression: (path) =>
+        this.handleAssignmentExpression(path, variblesToDeclare),
+      Identifier: (path) => this.handleIdentifier(path, variblesInScope),
     });
+
     variblesInScope = variblesInScope.filter(
       (v) => !variblesToDeclare.includes(v)
     );
 
-    traverse(t.file(t.program([block])), {
-      TaggedTemplateExpression(path) {
-        path.traverse({
-          CallExpression(innerPath) {
-            if (
-              innerPath.node.callee.type === "Identifier" &&
-              innerPath.node.arguments.length === 0
-            ) {
-              const properties = [t.spreadElement(t.identifier("_state"))];
-              for (const variable of variblesToDeclare) {
-                properties.push(
-                  t.objectProperty(
-                    t.identifier(variable),
-                    t.identifier(variable)
+    if (!this.opts.isModule) {
+      return t.functionDeclaration(
+        t.identifier(this.opts.jsName),
+        [
+          t.objectPattern(
+            variblesInScope.map((val) =>
+              t.objectProperty(
+                t.identifier(val),
+                t.identifier(val),
+                false,
+                true
+              )
+            )
+          ),
+          t.identifier("_F"),
+        ],
+        t.blockStatement([
+          ...(variblesToDeclare.length
+            ? [
+                t.variableDeclaration(
+                  "let",
+                  variblesToDeclare.map((target) =>
+                    t.variableDeclarator(t.identifier(target))
                   )
-                );
-              }
-              const objectArg = t.objectExpression(properties);
+                ),
+              ]
+            : []),
+          ...this.statements,
+          t.returnStatement(templateStatements),
+        ])
+      );
+    }
 
-              innerPath.node.arguments.push(objectArg);
-              innerPath.node.arguments.push(t.identifier("_F"));
-            }
-          },
-        });
-      },
+    traverse(t.file(t.program([block])), {
+      TaggedTemplateExpression: (path) =>
+        this.handleTaggedTemplateExpression(path, variblesToDeclare),
     });
 
     const functionDeclaration = t.functionDeclaration(
-      t.identifier(this.name),
+      t.identifier(this.opts.jsName),
       [t.identifier("_state"), t.identifier("_F")],
       t.blockStatement([
+        generateDestructuringAST(
+          variblesInScope.filter(
+            (val) =>
+              val !== "_state" &&
+              !this.modulesToImport.some((obj) => obj.jsName === val)
+          )
+        ),
         ...(variblesToDeclare.length
           ? [
               t.variableDeclaration(
-                "var",
+                "let",
                 variblesToDeclare.map((target) =>
                   t.variableDeclarator(t.identifier(target))
                 )
@@ -212,10 +195,10 @@ class Parser {
     );
 
     const importDeclarations = this.modulesToImport.length
-      ? this.modulesToImport.map((moduleName) =>
+      ? this.modulesToImport.map(({ name, jsName }) =>
           t.importDeclaration(
-            [t.importDefaultSpecifier(t.identifier(moduleName))],
-            t.stringLiteral(moduleName)
+            [t.importDefaultSpecifier(t.identifier(jsName))],
+            t.stringLiteral(name + ".liquid")
           )
         )
       : [];
@@ -227,47 +210,238 @@ class Parser {
   }
 
   wrapTemplate(node) {
-    if (node instanceof n.NodeList) {
-      if (node.children.length === 1) {
-        if (node.children.length === 1) return this.wrap(node.children[0]);
-        return node.children.map((it) => this.wrap(it));
-      }
-      let prevRawData = "";
-      let elements = [];
-      let expressions = [];
-
-      node.children.forEach((child) => {
-        if (isTemplateData(child)) {
-          prevRawData += child.children.map((it) => it.value).join("");
-        } else {
-          elements.push(t.templateElement({ raw: prevRawData }));
-          prevRawData = "";
-          if (child instanceof n.Output) {
-            const r = this.wrap(child.children[0]);
-            expressions = [...expressions, r];
-          } else {
-            expressions = expressions.concat(this.wrap(child));
-          }
-        }
-      });
-
-      elements.push(t.templateElement({ raw: prevRawData }));
-
-      return t.taggedTemplateExpression(
-        t.identifier("html"),
-        t.templateLiteral(
-          elements,
-          expressions.filter((it) => it)
-        )
-      );
+    if (!(node instanceof n.NodeList)) {
+      return this.wrap(node);
     }
-    return this.wrap(node);
+
+    if (node.children.length === 1) {
+      return this.wrap(node.children[0]);
+    }
+
+    const { elements, expressions } = this.processChildren(node.children);
+
+    return this.createTaggedTemplateExpression(elements, expressions);
   }
-  wrap(node) {
-    const { parsedPartials } = this;
+
+  processChildren(children) {
+    let prevRawData = "";
+    let elements = [];
+    let expressions = [];
+
+    children.forEach((child) => {
+      if (isTemplateData(child)) {
+        prevRawData += child.children.map((it) => it.value).join("");
+      } else {
+        elements.push(this.createTemplateElement(prevRawData));
+        prevRawData = "";
+        expressions = expressions.concat(this.wrapChild(child));
+      }
+    });
+
+    elements.push(this.createTemplateElement(prevRawData));
+
+    return { elements, expressions };
+  }
+
+  createTemplateElement(rawData) {
+    return t.templateElement({ raw: rawData });
+  }
+
+  wrapChild(child) {
+    if (child instanceof n.Output) {
+      return [this.wrap(child.children[0])];
+    }
+    return this.wrap(child);
+  }
+
+  createTaggedTemplateExpression(elements, expressions) {
+    return t.taggedTemplateExpression(
+      t.identifier("html"),
+      t.templateLiteral(
+        elements,
+        expressions.map((it) => this.processExpression(it))
+      )
+    );
+  }
+
+  processExpression(expression) {
+    if (expression.type === "Identifier") {
+      return this.handleIdentifierExpression(expression);
+    }
 
     if (
-      node instanceof n.Output &&
+      expression.type === "ConditionalExpression" &&
+      expression.test.type === "Identifier"
+    ) {
+      return this.handleConditionalExpression(expression);
+    }
+
+    return expression;
+  }
+
+  handleCallExpression(path, variblesInScope) {
+    for (const arg of path.node.arguments) {
+      if (arg.type === "Identifier" && !variblesInScope.includes(arg.name)) {
+        variblesInScope.push(arg.name);
+      }
+    }
+  }
+
+  handleAssignmentExpression(path, variblesToDeclare) {
+    if (path.find((path) => path.isMemberExpression())) {
+      return;
+    }
+    if (!t.isIdentifier(path.node.left)) {
+      return;
+    }
+    const firstPart = path.node.left.name.split(".")[0];
+    if (
+      !(
+        path.scope.hasBinding(firstPart) ||
+        path.scope.parentHasBinding(firstPart)
+      ) &&
+      !variblesToDeclare.includes(firstPart)
+    ) {
+      variblesToDeclare.push(firstPart);
+    }
+  }
+
+  handleIdentifier(path, variblesInScope) {
+    if (
+      t.isMemberExpression(path.parent) &&
+      t.isIdentifier(path.parent.object)
+    ) {
+      const name = path.parent.object.name;
+      if (
+        !(path.scope.hasBinding(name) || path.scope.parentHasBinding(name)) &&
+        !variblesInScope.includes(name)
+      )
+        variblesInScope.push(name);
+      return;
+    }
+    if (path.find((path) => path.isMemberExpression())) {
+      return;
+    }
+    const firstPart = path.node.name.split(".")[0];
+    if (
+      !(
+        path.scope.hasBinding(firstPart) ||
+        path.scope.parentHasBinding(firstPart)
+      ) &&
+      !variblesInScope.includes(firstPart) &&
+      !["html", "repeat", "_F"].includes(firstPart)
+    ) {
+      variblesInScope.push(firstPart);
+    }
+  }
+
+  handleTaggedTemplateExpression(path, variblesToDeclare) {
+    path.traverse({
+      CallExpression: (innerPath) => {
+        if (
+          innerPath.node.callee.type === "Identifier" &&
+          innerPath.node.arguments.length === 0
+        ) {
+          const properties = [t.spreadElement(t.identifier("_state"))];
+          for (const variable of variblesToDeclare) {
+            properties.push(
+              t.objectProperty(t.identifier(variable), t.identifier(variable))
+            );
+          }
+          const objectArg = t.objectExpression(properties);
+
+          innerPath.node.arguments.push(objectArg);
+          innerPath.node.arguments.push(t.identifier("_F"));
+        }
+      },
+    });
+  }
+
+  handleIdentifierExpression(identifier) {
+    const nameIdentifier = t.identifier(identifier.name);
+    return t.conditionalExpression(
+      t.binaryExpression(
+        "===",
+        t.unaryExpression("typeof", nameIdentifier),
+        t.stringLiteral("undefined")
+      ),
+      t.memberExpression(t.identifier("_state"), nameIdentifier),
+      nameIdentifier
+    );
+  }
+
+  handleConditionalExpression(expression) {
+    const nameIdentifier = t.identifier(expression.test.name);
+    const clonedNode = t.clone(expression);
+    clonedNode.test = t.conditionalExpression(
+      t.binaryExpression(
+        "===",
+        t.unaryExpression("typeof", nameIdentifier),
+        t.stringLiteral("undefined")
+      ),
+      t.memberExpression(t.identifier("_state"), nameIdentifier),
+      nameIdentifier
+    );
+    return clonedNode;
+  }
+
+  wrap(node) {
+    if (node instanceof n.Output) {
+      return this.handleOutput(node);
+    }
+    if (node instanceof n.Array) {
+      return this.handleArray(node);
+    }
+    if (node instanceof n.Dict) {
+      return this.handleDict(node);
+    }
+    if (node instanceof n.Group) {
+      return this.handleGroup(node);
+    }
+    if (node instanceof n.NodeList) {
+      return this.handleNodeList(node);
+    }
+    if (node instanceof n.Set) {
+      return this.handleSet(node);
+    }
+    if (node instanceof n.Include) {
+      return this.handleInclude(node);
+    }
+    if (node instanceof n.LookupVal) {
+      return this.handleLookupVal(node);
+    }
+    if (node instanceof n.Symbol) {
+      return this.handleSymbol(node);
+    }
+    if (node instanceof n.FunCall) {
+      return this.handleFunCall(node);
+    }
+    if (node instanceof n.Literal) {
+      return this.handleLiteral(node);
+    }
+    if (node instanceof n.Value) {
+      return this.handleValue(node);
+    }
+    if (node instanceof n.Compare) {
+      return this.handleCompare(node);
+    }
+    if (node instanceof n.Not) {
+      return this.handleNot(node);
+    }
+    if (node instanceof n.BinOp) {
+      return this.handleBinOp(node);
+    }
+    if (node instanceof n.If || node instanceof n.InlineIf) {
+      return this.handleIf(node);
+    }
+    if (node instanceof n.For) {
+      return this.handleFor(node);
+    }
+    throw [node.typename, node];
+  }
+
+  handleOutput(node) {
+    if (
       node.children.length === 1 &&
       node.children[0] instanceof n.TemplateData
     ) {
@@ -279,192 +453,187 @@ class Parser {
         )
       );
     }
-    if (node instanceof n.Output) {
-      return this.wrap(node.children[0]);
-    }
-    if (node instanceof n.Array) {
-      return t.arrayExpression(node.children.map((c) => this.wrap(c)));
-    }
-    if (node instanceof n.Dict) {
-      return t.objectExpression(
-        node.children.map((pair) =>
-          t.objectProperty(
-            t.stringLiteral(pair.key.value),
-            this.wrap(pair.value)
-          )
-        )
-      );
-    }
+    return this.wrap(node.children[0]);
+  }
 
-    if (node instanceof n.Group) {
-      return t.sequenceExpression(node.children.map((it) => this.wrap(it)));
-    }
+  handleArray(node) {
+    return t.arrayExpression(node.children.map((c) => this.wrap(c)));
+  }
 
-    if (node instanceof n.NodeList) {
-      // TODO get rid of this
-      if (node.children.length === 1) return this.wrap(node.children[0]);
-      return node.children.map((it) => this.wrap(it));
-    }
+  handleDict(node) {
+    return t.objectExpression(
+      node.children.map((pair) =>
+        t.objectProperty(t.stringLiteral(pair.key.value), this.wrap(pair.value))
+      )
+    );
+  }
 
-    if (node instanceof n.Set) {
-      return t.callExpression(
-        t.arrowFunctionExpression(
-          [],
-          t.blockStatement(
-            node.targets.map((target) =>
-              t.expressionStatement(
-                t.assignmentExpression(
-                  "=",
-                  this.wrap(target),
-                  this.wrap(node.value)
-                )
+  handleGroup(node) {
+    return t.sequenceExpression(node.children.map((it) => this.wrap(it)));
+  }
+
+  handleNodeList(node) {
+    if (node.children.length === 1) return this.wrap(node.children[0]);
+    return node.children.map((it) => this.wrap(it));
+  }
+
+  handleSet(node) {
+    return t.callExpression(
+      t.arrowFunctionExpression(
+        [],
+        t.blockStatement(
+          node.targets.map((target) =>
+            t.expressionStatement(
+              t.assignmentExpression(
+                "=",
+                this.wrap(target),
+                this.wrap(node.value)
               )
             )
           )
-        ),
-        []
+        )
+      ),
+      []
+    );
+  }
+
+  handleInclude(node) {
+    const name = node.template.value;
+    const jsName = camelCase(name);
+    const count = pushOrUpdate(allImportedModules, name);
+    const uniqueJsName = `${jsName}__${count}`;
+    this.modulesToImport.push({
+      name: name,
+      jsName: uniqueJsName,
+    });
+    return t.callExpression(t.identifier(uniqueJsName), []);
+  }
+
+  handleLookupVal(node) {
+    const member = t.memberExpression(
+      this.wrap(node.target),
+      node.val instanceof n.Literal
+        ? Number.isInteger(node.val.value)
+          ? t.numericLiteral(node.val.value)
+          : t.identifier(node.val.value)
+        : this.wrap(node.val),
+      !(node.val instanceof n.Literal) || Number.isInteger(node.val.value)
+    );
+    return member;
+  }
+
+  handleSymbol(node) {
+    return t.identifier(node.value);
+  }
+
+  handleFunCall(node) {
+    if (node.name instanceof n.Symbol) {
+      return t.callExpression(
+        t.identifier(`_F.${node.name.value}`),
+        [].concat(this.wrap(node.args, false))
       );
     }
-    if (node instanceof n.Include) {
-      const camelCaseValue = camelCase(node.template.value);
-      if (
-        node.template instanceof n.Literal &&
-        camelCaseValue in parsedPartials
-      ) {
-        this.modulesToImport.push(camelCaseValue);
-        return t.callExpression(t.identifier(camelCaseValue), []);
-      } else if (
-        !(node.template.value in parsedPartials) &&
-        node.ignoreMissing
-      ) {
-        return t.nullLiteral();
-        return this.wrapTemplate(parsedPartials[node.template.value]);
-      } else if (!(node.template.value in parsedPartials)) {
-        throw new Error(`Template include not found ${node.template.value}`);
-      }
+  }
+
+  handleLiteral(node) {
+    if (node.value === null) {
+      return t.nullLiteral();
     }
-    if (node instanceof n.LookupVal) {
-      return t.memberExpression(
-        t.memberExpression(t.identifier("_state"), this.wrap(node.target)),
-        node.val instanceof n.Literal
-          ? Number.isInteger(node.val.value)
-            ? t.numericLiteral(node.val.value)
-            : t.identifier(node.val.value)
-          : this.wrap(node.val),
-        !(node.val instanceof n.Literal) || Number.isInteger(node.val.value)
+    if (typeof node.value === "string") {
+      return t.stringLiteral(node.value);
+    }
+    if (typeof node.value === "boolean") {
+      return t.booleanLiteral(node.value);
+    }
+    if (typeof node.value === "number") {
+      return t.numericLiteral(node.value);
+    }
+  }
+
+  handleValue(node) {
+    return t.identifier(node.value);
+  }
+
+  handleCompare(node) {
+    if (node.ops.length > 1) {
+      throw new Error("Multiple Operand not supported");
+    }
+    return t.binaryExpression(
+      node.ops[0].type,
+      this.wrap(node.expr),
+      this.wrap(node.ops[0].expr)
+    );
+  }
+
+  handleNot(node) {
+    return t.unaryExpression("!", this.wrap(node.target));
+  }
+
+  handleBinOp(node) {
+    if (LOGICAL_EXPRESSIONS[node.typename]) {
+      return t.logicalExpression(
+        LOGICAL_EXPRESSIONS[node.typename],
+        this.wrap(node.left),
+        this.wrap(node.right)
       );
     }
-    if (node instanceof n.Symbol) {
-      return t.identifier(node.value);
-    }
-    if (node instanceof n.FunCall) {
-      if (node.name instanceof n.Symbol) {
-        return t.callExpression(
-          t.identifier(`_F.${node.name.value}`),
-          // this.wrap(),
-          [].concat(this.wrap(node.args, false))
-        );
-      }
-    }
-    if (node instanceof n.Literal) {
-      if (node.value === null) {
-        return t.nullLiteral();
-      }
-      if (typeof node.value === "string") {
-        return t.stringLiteral(node.value);
-      }
-      if (typeof node.value === "boolean") {
-        return t.booleanLiteral(node.value);
-      }
-      if (typeof node.value === "number") {
-        return t.numericLiteral(node.value);
-      }
-    }
-    if (node instanceof n.Value) {
-      return t.identifier(node.value);
-    }
-    if (node instanceof n.Compare) {
-      if (node.ops.length > 1) {
-        throw new Error("Multiple Operand not supported");
-      }
+    if (BINARY_EXPRESSIONS[node.typename]) {
       return t.binaryExpression(
-        node.ops[0].type,
-        this.wrap(node.expr),
-        this.wrap(node.ops[0].expr)
+        BINARY_EXPRESSIONS[node.typename],
+        this.wrap(node.left),
+        this.wrap(node.right)
       );
     }
+  }
 
-    if (node instanceof n.Not) {
-      return t.unaryExpression("!", this.wrap(node.target));
-    }
-    if (node instanceof n.BinOp) {
-      if (LOGICAL_EXPRESSIONS[node.typename]) {
-        return t.logicalExpression(
-          LOGICAL_EXPRESSIONS[node.typename],
-          this.wrap(node.left),
-          this.wrap(node.right)
-        );
-      }
-      if (BINARY_EXPRESSIONS[node.typename]) {
-        return t.binaryExpression(
-          BINARY_EXPRESSIONS[node.typename],
-          this.wrap(node.left),
-          this.wrap(node.right)
-        );
-      }
-    }
+  handleIf(node) {
+    return t.conditionalExpression(
+      this.wrap(node.cond),
+      this.wrapTemplate(node.body),
+      node.else_ ? this.wrapTemplate(node.else_) : t.stringLiteral("")
+    );
+  }
 
-    if (node instanceof n.If || node instanceof n.InlineIf) {
-      return t.conditionalExpression(
-        this.wrap(node.cond),
-        this.wrapTemplate(node.body),
-        node.else_ ? this.wrapTemplate(node.else_) : t.stringLiteral("")
-      );
+  handleFor(node) {
+    if (!this.localScopeVariables.includes(node.name.value)) {
+      this.localScopeVariables.push(node.name.value);
     }
-
-    if (node instanceof n.For) {
-      const array = this.wrap(node.arr);
-      const repeatCallExpression = t.callExpression(
-        t.memberExpression(array, t.identifier("map")),
-        [
-          t.arrowFunctionExpression(
-            [
-              node.name instanceof n.Array
-                ? t.objectPattern(
-                    node.name.children.map((it) =>
-                      t.objectProperty(
-                        t.identifier(it.value),
-                        t.identifier(it.value),
-                        false,
-                        true
-                      )
+    const array = this.wrap(node.arr);
+    const repeatCallExpression = t.callExpression(
+      t.memberExpression(array, t.identifier("map")),
+      [
+        t.arrowFunctionExpression(
+          [
+            node.name instanceof n.Array
+              ? t.objectPattern(
+                  node.name.children.map((it) =>
+                    t.objectProperty(
+                      t.identifier(it.value),
+                      t.identifier(it.value),
+                      false,
+                      true
                     )
                   )
-                : this.wrap(node.name),
-              t.identifier("index"),
-            ],
-            this.wrapTemplate(node.body)
-          ),
-        ]
-      );
-
-      const isArray = t.callExpression(t.identifier("Array.isArray"), [array]);
-
-      return t.conditionalExpression(
-        node.else_
-          ? t.logicalExpression(
-              "&&",
-              isArray,
-              t.memberExpression(this.wrap(node.arr), t.identifier("length"))
-            )
-          : isArray,
-
-        repeatCallExpression,
-        node.else_ ? this.wrapTemplate(node.else_) : t.stringLiteral("")
-      );
-    }
-
-    throw [node.typename, node];
+                )
+              : this.wrap(node.name),
+            t.identifier("index"),
+          ],
+          this.wrapTemplate(node.body)
+        ),
+      ]
+    );
+    const isArray = t.callExpression(t.identifier("Array.isArray"), [array]);
+    return t.conditionalExpression(
+      node.else_
+        ? t.logicalExpression(
+            "&&",
+            isArray,
+            t.memberExpression(this.wrap(node.arr), t.identifier("length"))
+          )
+        : isArray,
+      repeatCallExpression,
+      node.else_ ? this.wrapTemplate(node.else_) : t.stringLiteral("")
+    );
   }
 }
 
