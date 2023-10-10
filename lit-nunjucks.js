@@ -52,10 +52,22 @@ function parse(source, opts) {
 class Parser {
   constructor(opts) {
     this.opts = opts;
+    this.inludeStack = [];
+  }
+  ast(source) {
+    const ast = this.parse(source);
+    return generate(
+      ast,
+      {
+        sourceMaps: true,
+        shouldPrintComment: true,
+        sourceFileName: "main.liquid",
+      },
+      { "main.liquid": source, ...this.opts.partials }
+    );
   }
   compile(source) {
-    const ast = this.parse(source);
-    return generate(ast).code;
+    return this.ast(source).code;
   }
   parse(source) {
     this.parsedPartials =
@@ -74,7 +86,7 @@ class Parser {
   transform(node) {
     this.statements = [];
 
-    const templateStatements = this.wrapTemplate(node);
+    const templateStatements = this.transformBlock(node, "main.liquid");
 
     const block = t.blockStatement([
       ...this.statements,
@@ -135,6 +147,7 @@ class Parser {
         }
       },
     });
+
     variblesInScope = variblesInScope.filter(
       (v) => !variblesToDeclare.includes(v)
     );
@@ -166,44 +179,79 @@ class Parser {
     );
   }
 
-  wrapTemplate(node) {
-    if (node instanceof n.NodeList) {
-      if (node.children.length === 1) {
-        if (node.children.length === 1) return this.wrap(node.children[0]);
-        return node.children.map((it) => this.wrap(it));
-      }
-      let prevRawData = "";
-      let elements = [];
-      let expressions = [];
-
-      node.children.forEach((child) => {
-        if (isTemplateData(child)) {
-          prevRawData += child.children.map((it) => it.value).join("");
-        } else {
-          elements.push(t.templateElement({ raw: prevRawData }));
-          prevRawData = "";
-          if (child instanceof n.Output) {
-            const r = this.wrap(child.children[0]);
-            expressions = [...expressions, r];
-          } else {
-            expressions = expressions.concat(this.wrap(child));
-          }
-        }
-      });
-
-      elements.push(t.templateElement({ raw: prevRawData }));
-
-      return t.taggedTemplateExpression(
-        t.identifier("html"),
-        t.templateLiteral(
-          elements,
-          expressions.filter((it) => it)
-        )
-      );
-    }
-    return this.wrap(node);
+  /**
+   * Wraps a code block such as if/else/for/include
+   * @param {*} node
+   * @returns
+   */
+  transformBlock(node) {
+    const codeNode = this.transformCodeBlock(node);
+    codeNode.loc = this.getLoc(node);
+    return codeNode;
   }
-  wrap(node) {
+  transformCodeBlock(node) {
+    if (!(node instanceof n.NodeList)) {
+      return this.transformNode(node);
+    }
+
+    if (node.children.length === 1) {
+      return this.transformNode(node.children[0]);
+    }
+
+    let prevRawData = "";
+    let elements = [];
+    let expressions = [];
+
+    node.children.forEach((child) => {
+      if (isTemplateData(child)) {
+        prevRawData += child.children.map((it) => it.value).join("");
+      } else {
+        elements.push(t.templateElement({ raw: prevRawData }));
+        prevRawData = "";
+        if (child instanceof n.Output) {
+          const outputNode = this.transformNode(child.children[0]);
+
+          expressions = [...expressions, outputNode];
+        } else {
+          expressions = expressions.concat(this.transformNode(child));
+        }
+      }
+    });
+
+    elements.push(t.templateElement({ raw: prevRawData }));
+
+    const resultNode = t.taggedTemplateExpression(
+      t.identifier("html"),
+      t.templateLiteral(
+        elements,
+        expressions.filter((it) => it)
+      )
+    );
+
+    return resultNode;
+  }
+  getLoc(node, templateName) {
+    this._locIndex = this._locIndex || 0;
+    const loc = {
+      start: { line: node.lineno, column: node.colno, index: this._locIndex },
+      end: {
+        line: node.lineno + 1,
+        column: node.colno + 1,
+        index: this._locIndex,
+      },
+      filename: this.inludeStack[0],
+      // identifierName: string | undefined | null;
+    };
+    this._locIndex++;
+    console.log(loc);
+    return loc;
+  }
+  transformNode(node) {
+    const codeNode = this.transformCodeNode(node);
+    codeNode.loc = this.getLoc(node);
+    return codeNode;
+  }
+  transformCodeNode(node) {
     const { parsedPartials } = this;
 
     if (
@@ -220,30 +268,33 @@ class Parser {
       );
     }
     if (node instanceof n.Output) {
-      return this.wrap(node.children[0]);
+      return this.transformNode(node.children[0]);
     }
     if (node instanceof n.Array) {
-      return t.arrayExpression(node.children.map((c) => this.wrap(c)));
+      return t.arrayExpression(node.children.map((c) => this.transformNode(c)));
     }
     if (node instanceof n.Dict) {
       return t.objectExpression(
         node.children.map((pair) =>
           t.objectProperty(
             t.stringLiteral(pair.key.value),
-            this.wrap(pair.value)
+            this.transformNode(pair.value)
           )
         )
       );
     }
 
     if (node instanceof n.Group) {
-      return t.sequenceExpression(node.children.map((it) => this.wrap(it)));
+      return t.sequenceExpression(
+        node.children.map((it) => this.transformNode(it))
+      );
     }
 
     if (node instanceof n.NodeList) {
       // TODO get rid of this
-      if (node.children.length === 1) return this.wrap(node.children[0]);
-      return node.children.map((it) => this.wrap(it));
+      if (node.children.length === 1)
+        return this.transformNode(node.children[0]);
+      return node.children.map((it) => this.transformNode(it));
     }
 
     if (node instanceof n.Set) {
@@ -255,8 +306,8 @@ class Parser {
               t.expressionStatement(
                 t.assignmentExpression(
                   "=",
-                  this.wrap(target),
-                  this.wrap(node.value)
+                  this.transformNode(target),
+                  this.transformNode(node.value)
                 )
               )
             )
@@ -266,29 +317,30 @@ class Parser {
       );
     }
     if (node instanceof n.Include) {
+      const templateName = node.template.value;
       if (
         node.template instanceof n.Literal &&
-        node.template.value in parsedPartials
+        templateName in parsedPartials
       ) {
-        return this.wrapTemplate(parsedPartials[node.template.value]);
-      } else if (
-        !(node.template.value in parsedPartials) &&
-        node.ignoreMissing
-      ) {
+        if (templateName) this.inludeStack.unshift(templateName);
+        const restult = this.transformCodeBlock(parsedPartials[templateName]);
+        if (templateName) this.inludeStack.shift();
+        restult.loc = this.getLoc(node);
+        return restult;
+      } else if (!(templateName in parsedPartials) && node.ignoreMissing) {
         return t.nullLiteral();
-        return this.wrapTemplate(parsedPartials[node.template.value]);
       } else if (!(node.template.value in parsedPartials)) {
-        throw new Error(`Template include not found ${node.template.value}`);
+        throw new Error(`Template include not found ${templateName}`);
       }
     }
     if (node instanceof n.LookupVal) {
       return t.memberExpression(
-        this.wrap(node.target),
+        this.transformNode(node.target),
         node.val instanceof n.Literal
           ? Number.isInteger(node.val.value)
             ? t.numericLiteral(node.val.value)
             : t.identifier(node.val.value)
-          : this.wrap(node.val),
+          : this.transformNode(node.val),
         !(node.val instanceof n.Literal) || Number.isInteger(node.val.value)
       );
     }
@@ -300,7 +352,7 @@ class Parser {
         return t.callExpression(
           t.identifier(`_F.${node.name.value}`),
           // this.wrap(),
-          [].concat(this.wrap(node.args, false))
+          [].concat(this.transformNode(node.args, false))
         );
       }
     }
@@ -327,41 +379,41 @@ class Parser {
       }
       return t.binaryExpression(
         node.ops[0].type,
-        this.wrap(node.expr),
-        this.wrap(node.ops[0].expr)
+        this.transformNode(node.expr),
+        this.transformNode(node.ops[0].expr)
       );
     }
 
     if (node instanceof n.Not) {
-      return t.unaryExpression("!", this.wrap(node.target));
+      return t.unaryExpression("!", this.transformNode(node.target));
     }
     if (node instanceof n.BinOp) {
       if (LOGICAL_EXPRESSIONS[node.typename]) {
         return t.logicalExpression(
           LOGICAL_EXPRESSIONS[node.typename],
-          this.wrap(node.left),
-          this.wrap(node.right)
+          this.transformNode(node.left),
+          this.transformNode(node.right)
         );
       }
       if (BINARY_EXPRESSIONS[node.typename]) {
         return t.binaryExpression(
           BINARY_EXPRESSIONS[node.typename],
-          this.wrap(node.left),
-          this.wrap(node.right)
+          this.transformNode(node.left),
+          this.transformNode(node.right)
         );
       }
     }
 
     if (node instanceof n.If || node instanceof n.InlineIf) {
       return t.conditionalExpression(
-        this.wrap(node.cond),
-        this.wrapTemplate(node.body),
-        node.else_ ? this.wrapTemplate(node.else_) : t.stringLiteral("")
+        this.transformNode(node.cond),
+        this.transformBlock(node.body),
+        node.else_ ? this.transformBlock(node.else_) : t.stringLiteral("")
       );
     }
 
     if (node instanceof n.For) {
-      const array = this.wrap(node.arr);
+      const array = this.transformNode(node.arr);
       const repeatCallExpression = t.callExpression(
         t.memberExpression(array, t.identifier("map")),
         [
@@ -378,10 +430,10 @@ class Parser {
                       )
                     )
                   )
-                : this.wrap(node.name),
+                : this.transformNode(node.name),
               t.identifier("index"),
             ],
-            this.wrapTemplate(node.body)
+            this.transformBlock(node.body)
           ),
         ]
       );
@@ -393,12 +445,15 @@ class Parser {
           ? t.logicalExpression(
               "&&",
               isArray,
-              t.memberExpression(this.wrap(node.arr), t.identifier("length"))
+              t.memberExpression(
+                this.transformNode(node.arr),
+                t.identifier("length")
+              )
             )
           : isArray,
 
         repeatCallExpression,
-        node.else_ ? this.wrapTemplate(node.else_) : t.stringLiteral("")
+        node.else_ ? this.transformBlock(node.else_) : t.stringLiteral("")
       );
     }
 
