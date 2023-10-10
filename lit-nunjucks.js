@@ -20,7 +20,7 @@ function generateDestructuringAST(variableNames) {
   return declaration;
 }
 
-function pushOrUpdate(arr, name, jsName) {
+function updateModuleImportCount(arr, name, jsName) {
   const obj = arr.find((item) => item.name === name);
 
   if (obj) {
@@ -500,7 +500,7 @@ class Parser {
   handleInclude(node) {
     const name = node.template.value;
     const jsName = camelCase(name);
-    const count = pushOrUpdate(allImportedModules, name);
+    const count = updateModuleImportCount(allImportedModules, name);
     const uniqueJsName = `${jsName}__${count}`;
     this.modulesToImport.push({
       name: name,
